@@ -2,7 +2,7 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const { GoogleGenerativeAI} = require("@google/generative-ai");
+const { Mistral } = require("@mistralai/mistralai");
 require("dotenv").config();
 
 const { v4: uuidv4 } = require("uuid");
@@ -19,9 +19,16 @@ const io = new Server(server, {
   },
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({model: "gemini-pro"});
+// const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
+const mistralApiKey = process.env.MISTRAL_API_KEY;
+if (!mistralApiKey) {
+  console.error("MISTRAL_API_KEY is not set. Please update your .env file.");
+  process.exit(1);
+}
+const mistralClient = new Mistral(mistralApiKey);
+const mistralModel = "codestral-latest"; // Use the Codestral model
 
 app.use(cors());
 app.use(express.json());
@@ -72,17 +79,31 @@ io.on("connection", (socket) => {
       files: roomFileSystems[roomId],
     });
 
-    // Notify other users that a new user has joined
-    socket.to(roomId).emit("user-joined", {
+    // Get all existing users in the room (excluding the new user)
+    const existingClients = clients.filter((c) => c.socketId !== socket.id);
+
+    console.log(`${username} (${socket.id}) joined room ${roomId}`);
+    console.log(
+      `Existing clients in room:`,
+      existingClients.map((c) => c.socketId)
+    );
+
+    // Tell all users (including new user) about the updated client list
+    io.in(roomId).emit("user-joined", {
       clients,
       username,
       socketId: socket.id,
     });
 
-    // Send the current list of clients to the new user
-    socket.emit("user-joined", { clients });
-
-    console.log(`${username} joined room ${roomId}`);
+    // CRITICAL: Tell ONLY existing users to initiate WebRTC connections to the new user
+    existingClients.forEach((client) => {
+      console.log(
+        `Telling ${client.socketId} to initiate peer with ${socket.id}`
+      );
+      io.to(client.socketId).emit("initiate-peer", {
+        socketId: socket.id,
+      });
+    });
   });
 
   // Handle code changes and update server state
@@ -128,6 +149,74 @@ io.on("connection", (socket) => {
     const roomId = roomSocketMap[socket.id];
     if (roomId) {
       socket.to(roomId).emit("mute-status-updated", { socketId, isMuted });
+    }
+  });
+
+  socket.on("get-suggestion", async (payload) => {
+    const { codeContext, codeAfter, currentLine, language, requestId } =
+      payload;
+
+    if (!codeContext) {
+      return socket.emit("suggestion-result", { suggestion: "", requestId });
+    }
+
+    try {
+      const limitedContext = codeContext.slice(-2000);
+      const limitedAfter = (codeAfter || "").slice(0, 500);
+
+      // Correct way to call Mistral API
+      const result = await mistralClient.chat.complete({
+        model: mistralModel,
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert ${language} code completion assistant.
+Complete the code. Provide ONLY the code snippet that should be inserted.
+Do not explain. Do not use markdown.
+Match the indentation of the current line: "${
+              currentLine.match(/^\s*/)?.[0] || ""
+            }"
+Do not repeat code that is already in the suffix (the 'code after' part).`,
+          },
+          {
+            role: "user",
+            content: `[PREFIX]${limitedContext}[SUFFIX]${limitedAfter}[MIDDLE]`,
+          },
+        ],
+        maxTokens: 64,
+        temperature: 0.0,
+      });
+
+      let suggestion = result.choices[0].message.content.trim();
+
+      // Post-processing cleanup
+      if (currentLine && currentLine.trim()) {
+        const tokens = currentLine.trim().split(/[\s\(\)\[\]\{\}]/);
+        const lastToken = tokens.filter(Boolean).pop() || "";
+        if (lastToken && suggestion.startsWith(lastToken)) {
+          suggestion = suggestion.substring(lastToken.length);
+        }
+      }
+
+      if (limitedAfter && limitedAfter.trim() && suggestion.trim()) {
+        const afterFirstChar = limitedAfter.trim()[0];
+        const completionLastChar =
+          suggestion.trim()[suggestion.trim().length - 1];
+        if (
+          afterFirstChar === completionLastChar &&
+          [")", "}", "]", ";"].includes(afterFirstChar)
+        ) {
+          suggestion = suggestion.trim().slice(0, -1);
+        }
+      }
+
+      socket.emit("suggestion-result", {
+        suggestion: suggestion,
+        requestId,
+      });
+    } catch (error) {
+      console.error("Codestral API Error:", error.message);
+      socket.emit("suggestion-result", { suggestion: "", requestId });
     }
   });
 
@@ -183,27 +272,6 @@ app.post("/api/execute", async (req, res) => {
     res
       .status(500)
       .json({ error: error.message || "An error occurred during execution." });
-  }
-});
-
-app.post("/api/completion", async (req, res) => {
-  const { codeContext, language } = req.body;
-
-  if (!codeContext) {
-    return res.status(400).json({ error: "Code context is required." });
-  }
-
-  try {
-    const prompt = `You are an expert programmer and code completion assistant. Complete the following ${language} code snippet. Provide only the code completion text, without any explanation, comments, or repeating the provided code. \n\n---START OF CODE---\n${codeContext}\n---END OF CODE---`;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const completion = response.text();
-
-    res.json({ completion });
-  } catch (error) {
-    console.error("Error with Gemini API:", error);
-    res.status(500).json({ error: "Failed to get AI completion." });
   }
 });
 

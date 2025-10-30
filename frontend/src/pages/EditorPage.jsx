@@ -3,10 +3,22 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import Editor from "@monaco-editor/react";
 import axios from "axios";
-import Client from "../components/Client";
+import Avatar from "react-avatar";
 import toast, { Toaster } from "react-hot-toast";
 import { debounce } from "lodash";
 import Peer from "simple-peer";
+import { v4 as uuidv4 } from "uuid";
+import { useTheme } from "../contexts/ThemeContext";
+import ThemeToggle from "../components/ThemeToggle";
+import {
+  FaMicrophone,
+  FaMicrophoneSlash,
+  FaCopy,
+  FaPlay,
+  FaLightbulb,
+  FaMoon,
+  FaSun,
+} from "react-icons/fa";
 
 const getLanguageFromExtension = (filename) => {
   const extension = filename.split(".").pop();
@@ -41,14 +53,18 @@ const boilerplates = {
   plaintext: "Your text goes here.",
 };
 
+const pendingRequests = new Map();
+
 const EditorPage = () => {
+  const { theme, toggleTheme } = useTheme();
+
   const socketRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
   const { roomId } = useParams();
   const fileRef = useRef(null);
   const localStreamRef = useRef(null);
-  const filesRef = useRef({}); // ADD THIS LINE - This was missing!
+  const filesRef = useRef({});
 
   const [clients, setClients] = useState([]);
   const [files, setFiles] = useState({});
@@ -56,25 +72,29 @@ const EditorPage = () => {
   const [showFileInput, setShowFileInput] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isAiEnabled, setIsAiEnabled] = useState(false);
+  const isAiEnabledRef = useRef(isAiEnabled);
+
+  const monacoRef = useRef(null);
+  const editorRef = useRef(null);
+  const [isMonacoReady, setIsMonacoReady] = useState(false);
+  const providerDisposableRef = useRef(null);
 
   const [output, setOutput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [localStream, setLocalStream] = useState(null);
-  const [audioStatus, setAudioStatus] = useState({}); // { socketId: isMuted }
-  const peersRef = useRef({}); // Using an object keyed by socketId
-  const audioRef = useRef(null); // To hold the audio elements
+  const [audioStatus, setAudioStatus] = useState({});
+  const peersRef = useRef({});
+  const audioRef = useRef(null);
 
   useEffect(() => {
-    // Keep the ref updated with the latest files state
     filesRef.current = files;
   }, [files]);
 
-  //Second main useeffect
   useEffect(() => {
     const init = async () => {
-      // --- 1. ESTABLISH SOCKET CONNECTION ---
       socketRef.current = io("http://localhost:5001");
       socketRef.current.on("connect_error", (err) => handleErrors(err));
       socketRef.current.on("connect_failed", (err) => handleErrors(err));
@@ -84,25 +104,25 @@ const EditorPage = () => {
         navigate("/");
       }
 
-      // --- 2. GET MICROPHONE ACCESS ---
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: false,
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
-        localStreamRef.current = stream; // Store stream in ref
+        localStreamRef.current = stream;
         setLocalStream(stream);
-        // Initialize audio status as unmuted (false means not muted)
         setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: false }));
       } catch (err) {
         console.error("Could not access microphone:", err);
         toast.error("Microphone access denied or not available.");
       }
 
-      // --- 3. SETUP ALL EVENT LISTENERS ---
       setupSocketListeners();
 
-      // --- 4. JOIN ROOM ---
       socketRef.current.emit("join-room", {
         roomId,
         username: location.state?.username,
@@ -110,7 +130,6 @@ const EditorPage = () => {
     };
 
     const setupSocketListeners = () => {
-      // --- FILE SYSTEM LISTENERS ---
       socketRef.current.on("sync-filesystem", ({ files: receivedFiles }) => {
         if (receivedFiles) {
           setFiles(receivedFiles);
@@ -120,10 +139,12 @@ const EditorPage = () => {
           }
         }
       });
+
       socketRef.current.on("file-created", ({ file }) => {
         setFiles((prev) => ({ ...prev, [file.name]: file }));
         toast.success(`File "${file.name}" was created.`);
       });
+
       socketRef.current.on("file-deleted", ({ fileName }) => {
         setFiles((prevFiles) => {
           const newFiles = { ...prevFiles };
@@ -137,6 +158,7 @@ const EditorPage = () => {
         });
         toast.error(`File "${fileName}" was deleted.`);
       });
+
       socketRef.current.on("code-change", ({ file, code }) => {
         setFiles((prev) => ({
           ...prev,
@@ -144,54 +166,164 @@ const EditorPage = () => {
         }));
       });
 
-      // --- COLLABORATION AND WEBRTC LISTENERS ---
-      socketRef.current.on("user-joined", ({ clients, username, socketId }) => {
-        if (username) toast.success(`${username} joined the room.`);
-        setClients(clients);
+      socketRef.current.on("suggestion-result", ({ suggestion, requestId }) => {
+        const pending = pendingRequests.get(requestId);
+        if (pending && suggestion) {
+          pending.resolve({
+            items: [
+              {
+                insertText: suggestion,
+                range: {
+                  startLineNumber: pending.position.lineNumber,
+                  startColumn: pending.position.column,
+                  endLineNumber: pending.position.lineNumber,
+                  endColumn: pending.position.column,
+                },
+              },
+            ],
+          });
+          pendingRequests.delete(requestId);
+        } else if (pending) {
+          pending.resolve({ items: [] });
+          pendingRequests.delete(requestId);
+        }
+      });
 
-        // Existing clients create a peer to signal the new user
-        if (socketRef.current.id !== socketId && localStreamRef.current) {
-          const peer = createPeer(
-            socketId,
-            socketRef.current.id,
-            localStreamRef.current
-          );
+      // FIXED: Only update clients list, don't handle WebRTC here
+      socketRef.current.on("user-joined", ({ clients, username, socketId }) => {
+        console.log("📢 user-joined:", {
+          username,
+          socketId,
+          myId: socketRef.current.id,
+        });
+
+        if (username && socketId !== socketRef.current.id) {
+          toast.success(`${username} joined the room.`);
+        }
+
+        setClients(clients);
+      });
+
+      // NEW: Handle server instruction to initiate peer connection
+      socketRef.current.on("initiate-peer", ({ socketId }) => {
+        console.log("🔌 initiate-peer received for:", socketId);
+
+        if (!socketId) {
+          console.error("❌ socketId is undefined in initiate-peer");
+          return;
+        }
+
+        if (socketRef.current.id === socketId) {
+          console.log("⚠️ Skipping - trying to connect to self");
+          return;
+        }
+
+        if (peersRef.current[socketId]) {
+          console.log("⚠️ Peer already exists for", socketId);
+          return;
+        }
+
+        if (!localStreamRef.current) {
+          console.error("❌ No local stream available");
+          return;
+        }
+
+        console.log("✅ Creating peer (INITIATOR) for:", socketId);
+        const peer = createPeer(
+          socketId,
+          socketRef.current.id,
+          localStreamRef.current
+        );
+
+        if (peer) {
           peersRef.current[socketId] = peer;
         }
       });
+
+      // Handle incoming offer from initiator
       socketRef.current.on("user-joined-signal", ({ signal, callerID }) => {
-        // New user receives signal and adds the existing peer
-        if (localStreamRef.current) {
-          const peer = addPeer(signal, callerID, localStreamRef.current);
+        console.log("📨 user-joined-signal from:", callerID);
+
+        if (!callerID) {
+          console.error("❌ callerID is undefined");
+          return;
+        }
+
+        if (peersRef.current[callerID]) {
+          console.warn("⚠️ Peer already exists for", callerID, "- skipping");
+          return;
+        }
+
+        if (!localStreamRef.current) {
+          console.error("❌ No local stream available");
+          return;
+        }
+
+        console.log("✅ Adding peer (NON-INITIATOR) for:", callerID);
+        const peer = addPeer(signal, callerID, localStreamRef.current);
+
+        if (peer) {
           peersRef.current[callerID] = peer;
         }
       });
+
+      // Handle answer from receiver
       socketRef.current.on("receiving-returned-signal", ({ signal, id }) => {
+        console.log("📨 receiving-returned-signal from:", id);
         const peer = peersRef.current[id];
-        if (peer) {
+
+        if (!peer) {
+          console.warn("⚠️ Peer doesn't exist for:", id);
+          return;
+        }
+
+        if (peer.destroyed) {
+          console.warn("⚠️ Peer is destroyed for:", id);
+          return;
+        }
+
+        try {
+          console.log("✅ Signaling peer with answer:", id);
           peer.signal(signal);
+        } catch (err) {
+          console.error("❌ Error signaling peer:", id, err.message);
         }
       });
+
       socketRef.current.on("user-left", ({ socketId, username }) => {
+        console.log("👋 User left:", username, socketId);
         toast.error(`${username} left the room.`);
+
         if (peersRef.current[socketId]) {
-          peersRef.current[socketId].destroy();
+          try {
+            peersRef.current[socketId].destroy();
+            console.log("✅ Destroyed peer for:", socketId);
+          } catch (err) {
+            console.error("❌ Error destroying peer:", err);
+          }
           delete peersRef.current[socketId];
         }
+
         const audioEl = document.getElementById(`audio-${socketId}`);
-        if (audioEl) audioEl.remove();
+        if (audioEl) {
+          audioEl.srcObject = null;
+          audioEl.remove();
+          console.log("✅ Removed audio element for:", socketId);
+        }
+
         setClients((prev) =>
           prev.filter((client) => client.socketId !== socketId)
         );
       });
+
       socketRef.current.on("mute-status-updated", ({ socketId, isMuted }) => {
+        console.log("🔇 Mute status updated:", socketId, isMuted);
         setAudioStatus((prev) => ({ ...prev, [socketId]: isMuted }));
       });
     };
 
     init();
 
-    // --- CLEANUP FUNCTION ---
     return () => {
       console.log("Component cleanup - stopping audio tracks");
       if (localStreamRef.current) {
@@ -201,80 +333,122 @@ const EditorPage = () => {
         });
       }
 
-      // Cleanup peers
       Object.values(peersRef.current).forEach((peer) => {
         if (peer) peer.destroy();
       });
+
+      pendingRequests.clear();
 
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current.off();
       }
     };
-  }, [roomId, location.state?.username, navigate, isInitialized]); // Added isInitialized to dependencies
+  }, [roomId, location.state?.username, navigate, isInitialized]);
 
   useEffect(() => {
-    // This function is defined outside the main effect to be accessible
-    const fetchCompletions = async (model, position) => {
-      const code = model.getValue();
-      const codeUntilCursor = model.getValueInRange({
-        startLineNumber: 1,
-        startColumn: 1,
-        endLineNumber: position.lineNumber,
-        endColumn: position.column,
-      });
+    isAiEnabledRef.current = isAiEnabled;
+  }, [isAiEnabled]);
 
-      try {
-        const response = await axios.post(
-          "http://localhost:5001/api/completion",
-          {
-            codeContext: code, // Send the whole code for better context
-            language: files[activeFile]?.language || "plaintext",
-          }
-        );
+  useEffect(() => {
+    if (!isMonacoReady || !monacoRef.current) return;
 
-        if (response.data.completion) {
-          return [
-            {
-              label: response.data.completion,
-              kind: window.monaco?.languages?.CompletionItemKind?.Snippet || 1,
-              insertText: response.data.completion,
-              range: new window.monaco.Range(
-                position.lineNumber,
-                position.column,
-                position.lineNumber,
-                position.column
-              ),
-            },
-          ];
-        }
-      } catch (error) {
-        console.error("AI Completion Error:", error);
-      }
-      return [];
-    };
+    if (providerDisposableRef.current) {
+      providerDisposableRef.current.dispose();
+      providerDisposableRef.current = null;
+    }
 
-    // Debounce the fetch function to avoid spamming the API
-    const debouncedFetch = debounce(fetchCompletions, 500);
-
-    if (window.monaco) {
-      const provider = window.monaco.languages.registerCompletionItemProvider(
-        "python",
+    const provider =
+      monacoRef.current.languages.registerInlineCompletionsProvider(
+        { pattern: "**/*" },
         {
-          // Register for all languages later
-          provideCompletionItems: async (model, position) => {
-            const suggestions = await debouncedFetch(model, position);
-            return { suggestions: suggestions };
+          provideInlineCompletions: async (model, position, context, token) => {
+            if (!isAiEnabledRef.current) {
+              return { items: [] };
+            }
+
+            const currentLine = model.getLineContent(position.lineNumber);
+            const currentLinePrefix = currentLine.substring(
+              0,
+              position.column - 1
+            );
+
+            if (
+              currentLinePrefix.trim().length === 0 &&
+              context.triggerKind === 0
+            ) {
+              return { items: [] };
+            }
+
+            const requestId = uuidv4();
+
+            try {
+              const result = await new Promise((resolve, reject) => {
+                if (token.isCancellationRequested) {
+                  resolve({ items: [] });
+                  return;
+                }
+
+                pendingRequests.set(requestId, { resolve, position });
+
+                const fullCode = model.getValue();
+                const language = getLanguageFromExtension(model.uri.path);
+                const offset = model.getOffsetAt(position);
+                const codeBeforeCursor = fullCode.substring(0, offset);
+                const codeAfterCursor = fullCode.substring(offset);
+
+                socketRef.current.emit("get-suggestion", {
+                  codeContext: codeBeforeCursor,
+                  codeAfter: codeAfterCursor,
+                  currentLine: currentLinePrefix,
+                  language: language,
+                  requestId: requestId,
+                });
+
+                const timeout = setTimeout(() => {
+                  if (pendingRequests.has(requestId)) {
+                    pendingRequests.delete(requestId);
+                    resolve({ items: [] });
+                  }
+                }, 2000);
+
+                token.onCancellationRequested(() => {
+                  if (pendingRequests.has(requestId)) {
+                    pendingRequests.delete(requestId);
+                  }
+                  clearTimeout(timeout);
+                  resolve({ items: [] });
+                });
+              });
+
+              return result;
+            } catch (error) {
+              console.debug("Inline completion request cancelled or failed");
+              return { items: [] };
+            }
           },
+          freeInlineCompletions: (completions) => {},
         }
       );
 
-      // You can register for multiple languages
-      // monaco.languages.registerCompletionItemProvider('javascript', ...);
+    providerDisposableRef.current = provider;
 
-      return () => provider.dispose(); // Cleanup on unmount
+    return () => {
+      if (providerDisposableRef.current) {
+        providerDisposableRef.current.dispose();
+        providerDisposableRef.current = null;
+      }
+      pendingRequests.clear();
+    };
+  }, [isMonacoReady]);
+
+  const handleEditorDidMount = (editor, monaco) => {
+    editorRef.current = editor;
+    if (!monacoRef.current) {
+      monacoRef.current = monaco;
+      setIsMonacoReady(true);
     }
-  }, [activeFile, files]); //rerunning whenever activeFile or files change
+  };
 
   const handleCreateFile = (e) => {
     if (e.key === "Enter" && newFileName.trim()) {
@@ -353,88 +527,232 @@ const EditorPage = () => {
     }
   };
 
-  // --- Helper functions for WebRTC ---
+  function attachAudioStream(socketId, remoteStream) {
+    console.log(`🎵 Attaching audio stream for ${socketId}`);
+
+    const tracks = remoteStream.getAudioTracks();
+    console.log(
+      `Audio tracks (${tracks.length}):`,
+      tracks.map((t) => ({
+        id: t.id,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState,
+      }))
+    );
+
+    if (tracks.length === 0) {
+      console.error("❌ No audio tracks in remote stream!");
+      return;
+    }
+
+    // Remove existing audio element
+    const existingAudio = document.getElementById(`audio-${socketId}`);
+    if (existingAudio) {
+      console.log("🗑️ Removing existing audio element");
+      existingAudio.srcObject = null;
+      existingAudio.remove();
+    }
+
+    // Create new audio element
+    const audio = document.createElement("audio");
+    audio.id = `audio-${socketId}`;
+    audio.srcObject = remoteStream;
+    audio.autoplay = true;
+    audio.volume = 1.0;
+
+    audio.onloadedmetadata = () => {
+      console.log(`✅ Audio metadata loaded for ${socketId}`);
+      audio
+        .play()
+        .then(() => {
+          console.log(`🔊 Audio playing for ${socketId}`);
+          console.log(`Audio element state:`, {
+            paused: audio.paused,
+            volume: audio.volume,
+            muted: audio.muted,
+            readyState: audio.readyState,
+          });
+        })
+        .catch((e) => {
+          console.error(`❌ Audio play failed for ${socketId}:`, e.message);
+        });
+    };
+
+    audio.onerror = (e) => {
+      console.error(`❌ Audio element error for ${socketId}:`, e);
+    };
+
+    if (audioRef.current) {
+      audioRef.current.appendChild(audio);
+      console.log(`✅ Audio element appended to container for ${socketId}`);
+    } else {
+      console.error("❌ audioRef.current is null!");
+    }
+  }
+
   function createPeer(userToSignal, callerID, stream) {
-    // Use the stream passed as an argument
-    const peer = new Peer({ initiator: true, trickle: false, stream });
-    // ... rest of the function is the same
-    peer.on("signal", (signal) => {
-      socketRef.current.emit("sending-signal", {
-        userToSignal,
-        callerID,
-        signal,
-      });
+    console.log(`[createPeer] 🚀 Creating INITIATOR peer for: ${userToSignal}`);
+
+    if (!userToSignal) {
+      console.error("❌ userToSignal is undefined!");
+      return null;
+    }
+
+    // Log local stream info
+    const audioTracks = stream.getAudioTracks();
+    console.log(
+      `Local audio tracks (${audioTracks.length}):`,
+      audioTracks.map((t) => ({
+        id: t.id,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState,
+      }))
+    );
+
+    const peer = new Peer({
+      initiator: true,
+      trickle: false,
+      stream,
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      },
     });
-    peer.on("stream", (remoteStream) => {
-      const audio = document.createElement("audio");
-      audio.id = `audio-${userToSignal}`;
-      audio.srcObject = remoteStream;
-      audio.play().catch(console.error);
-      if (audioRef.current) {
-        audioRef.current.appendChild(audio);
+
+    peer.on("signal", (signal) => {
+      console.log(`[createPeer] 📤 Sending OFFER to ${userToSignal}`);
+      console.log(`Signal type:`, signal.type);
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit("sending-signal", {
+          userToSignal,
+          callerID,
+          signal,
+        });
+      } else {
+        console.error("❌ Socket not connected!");
       }
     });
+
+    peer.on("connect", () => {
+      console.log(`[createPeer] ✅ PEER CONNECTED with ${userToSignal}`);
+    });
+
+    peer.on("error", (err) => {
+      console.error(
+        `[createPeer] ❌ PEER ERROR with ${userToSignal}:`,
+        err.message
+      );
+    });
+
+    peer.on("stream", (remoteStream) => {
+      console.log(
+        `[createPeer] 🎵 Received remote stream from ${userToSignal}`
+      );
+      attachAudioStream(userToSignal, remoteStream);
+    });
+
+    peer.on("close", () => {
+      console.log(
+        `[createPeer] 🔌 Peer connection closed with ${userToSignal}`
+      );
+    });
+
     return peer;
   }
 
   function addPeer(incomingSignal, callerID, stream) {
-    // Use the stream passed as an argument
-    const peer = new Peer({ initiator: false, trickle: false, stream });
-    // ... rest of the function is the same
-    peer.on("signal", (signal) => {
-      socketRef.current.emit("returning-signal", { signal, callerID });
+    console.log(`[addPeer] 🚀 Creating NON-INITIATOR peer for: ${callerID}`);
+
+    if (!callerID) {
+      console.error("❌ callerID is undefined!");
+      return null;
+    }
+
+    // Log local stream info
+    const audioTracks = stream.getAudioTracks();
+    console.log(
+      `Local audio tracks (${audioTracks.length}):`,
+      audioTracks.map((t) => ({
+        id: t.id,
+        enabled: t.enabled,
+        muted: t.muted,
+        readyState: t.readyState,
+      }))
+    );
+
+    const peer = new Peer({
+      initiator: false,
+      trickle: false,
+      stream,
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      },
     });
-    peer.on("stream", (remoteStream) => {
-      const audio = document.createElement("audio");
-      audio.id = `audio-${callerID}`;
-      audio.srcObject = remoteStream;
-      audio.play().catch(console.error);
-      if (audioRef.current) {
-        audioRef.current.appendChild(audio);
+
+    peer.on("signal", (signal) => {
+      console.log(`[addPeer] 📤 Sending ANSWER to ${callerID}`);
+      console.log(`Signal type:`, signal.type);
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit("returning-signal", { signal, callerID });
+      } else {
+        console.error("❌ Socket not connected!");
       }
     });
-    peer.signal(incomingSignal);
+
+    peer.on("connect", () => {
+      console.log(`[addPeer] ✅ PEER CONNECTED with ${callerID}`);
+    });
+
+    peer.on("error", (err) => {
+      console.error(`[addPeer] ❌ PEER ERROR with ${callerID}:`, err.message);
+    });
+
+    peer.on("stream", (remoteStream) => {
+      console.log(`[addPeer] 🎵 Received remote stream from ${callerID}`);
+      attachAudioStream(callerID, remoteStream);
+    });
+
+    peer.on("close", () => {
+      console.log(`[addPeer] 🔌 Peer connection closed with ${callerID}`);
+    });
+
+    // Signal with incoming offer AFTER all handlers are set up
+    try {
+      console.log(
+        `[addPeer] 📥 Signaling peer with incoming OFFER from ${callerID}`
+      );
+      peer.signal(incomingSignal);
+    } catch (err) {
+      console.error("❌ Error during initial peer signal:", err.message);
+      return null;
+    }
+
     return peer;
   }
 
   const handleMuteToggle = (targetSocketId) => {
-    console.log("Mute toggle clicked for:", targetSocketId);
-    console.log("Current audio status:", audioStatus);
-
-    if (!localStream) {
-      console.log("No local stream available");
-      return;
-    }
+    if (!localStream) return;
 
     const myId = socketRef.current?.id;
-    console.log("My socket ID:", myId);
 
     if (targetSocketId === myId) {
       const currentlyMuted = audioStatus[myId] || false;
       const newMutedState = !currentlyMuted;
 
-      console.log(
-        "Currently muted:",
-        currentlyMuted,
-        "New state:",
-        newMutedState
-      );
-
-      // Toggle the actual audio track
       const audioTracks = localStream.getAudioTracks();
       audioTracks.forEach((track) => {
-        track.enabled = !newMutedState; // enabled is opposite of muted
-        console.log("Audio track enabled set to:", track.enabled);
+        track.enabled = !newMutedState;
       });
 
-      // Update local state
-      setAudioStatus((prev) => {
-        const newStatus = { ...prev, [myId]: newMutedState };
-        console.log("New audio status:", newStatus);
-        return newStatus;
-      });
+      setAudioStatus((prev) => ({ ...prev, [myId]: newMutedState }));
 
-      // Notify other users
       if (socketRef.current) {
         socketRef.current.emit("mute-status-change", {
           socketId: myId,
@@ -445,25 +763,26 @@ const EditorPage = () => {
   };
 
   const leaveRoom = () => {
-    // Stop all audio tracks to eliminate hissing sound
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         track.stop();
-        console.log("Stopped audio track on leave");
       });
     }
 
-    // Cleanup peers
     Object.values(peersRef.current).forEach((peer) => {
       if (peer) peer.destroy();
     });
 
-    // Disconnect socket
     if (socketRef.current) {
       socketRef.current.disconnect();
     }
 
-    navigate("/");
+    navigate("/join");
+  };
+
+  const copyRoomId = () => {
+    navigator.clipboard.writeText(roomId);
+    toast.success("Room ID copied to clipboard!");
   };
 
   if (!location.state?.username) {
@@ -474,123 +793,240 @@ const EditorPage = () => {
   const currentFile = files[activeFile];
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white font-sans">
+    <div className="flex flex-col h-screen bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white font-sans">
       <Toaster position="top-right" />
 
-      {/* LEFT SIDEBAR: Files and Users */}
-      <div className="w-1/5 bg-gray-800 p-4 border-r border-gray-700 flex flex-col">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-bold text-lg">Files</h2>
-          <button
-            onClick={() => setShowFileInput(!showFileInput)}
-            className="text-gray-400 hover:text-white text-xl font-bold"
-          >
-            +
-          </button>
-        </div>
-
-        {showFileInput && (
-          <input
-            type="text"
-            value={newFileName}
-            onChange={(e) => setNewFileName(e.target.value)}
-            onKeyDown={handleCreateFile}
-            placeholder="filename.ext"
-            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-md mb-4 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-            autoFocus
-          />
-        )}
-
-        <div className="flex-grow overflow-y-auto">
-          {Object.values(files).map((file) => (
-            <div
-              key={file.name}
-              onClick={() => setActiveFile(file.name)}
-              className={`flex justify-between items-center px-2 py-1.5 rounded-md cursor-pointer text-sm mb-1 ${
-                activeFile === file.name ? "bg-blue-600" : "hover:bg-gray-700"
-              }`}
+      {/* Top Navigation Bar */}
+      <div className="bg-gray-100 dark:bg-[#323233] h-12 flex items-center justify-between px-4 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+        <div className="flex items-center gap-4 min-w-0">
+          <h1 className="text-lg font-semibold text-gray-900 dark:text-white flex-shrink-0">
+            CollabCode
+          </h1>
+          <div className="flex items-center gap-2 bg-white dark:bg-[#1e1e1e] px-3 py-1.5 rounded min-w-0">
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
+              Room:
+            </span>
+            <span className="text-xs text-green-500 dark:text-green-400 font-mono truncate">
+              {roomId}
+            </span>
+            <button
+              onClick={copyRoomId}
+              className="text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors flex-shrink-0"
+              title="Copy Room ID"
             >
-              <span>{file.name}</span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDeleteFile(file.name);
-                }}
-                className="text-gray-400 hover:text-red-500 text-xs"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+              <FaCopy className="text-xs" />
+            </button>
+          </div>
         </div>
 
-        <hr className="my-4 border-gray-600" />
-        <h2 className="font-bold text-lg mb-4">Users</h2>
-        <div className="flex-grow">
-          {clients.map((client) => (
-            <Client
-              key={client.socketId}
-              username={client.username}
-              socketId={client.socketId}
-              onMuteToggle={handleMuteToggle}
-              isMuted={audioStatus[client.socketId] || false}
-            />
-          ))}
-        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <button
+            onClick={() => setIsAiEnabled(!isAiEnabled)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${
+              isAiEnabled
+                ? "bg-blue-600 hover:bg-blue-700 text-white"
+                : "bg-gray-200 hover:bg-gray-300 text-gray-700 dark:bg-[#2d2d30] dark:hover:bg-[#3e3e42] dark:text-gray-300"
+            }`}
+            title="Toggle AI Suggestions"
+          >
+            <FaLightbulb className="text-sm" />
+            <span className="text-xs">AI</span>
+          </button>
 
-        <div ref={audioRef} style={{ display: "none" }}></div>
-
-        <button
-          onClick={leaveRoom}
-          className="mt-4 bg-red-600 text-white py-2 rounded-md hover:bg-red-700 transition duration-200"
-        >
-          Leave Room
-        </button>
-      </div>
-
-      {/* MAIN PANEL: Editor and Output */}
-      <div className="flex flex-col w-4/5">
-        <div className="bg-gray-800 p-2 flex items-center justify-between border-b border-gray-700">
-          <span className="text-sm font-medium px-2">
-            {currentFile?.name || "No file selected"}
-          </span>
           <button
             onClick={handleRunCode}
-            className="bg-green-600 px-4 py-1 rounded text-sm hover:bg-green-700 disabled:bg-gray-500"
+            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-1.5 rounded text-sm text-white transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
             disabled={isLoading || !activeFile}
           >
-            {isLoading ? "Running..." : "Run"}
+            <FaPlay className="text-xs" />
+            <span>{isLoading ? "Running..." : "Run"}</span>
+          </button>
+          <ThemeToggle />
+
+          <button
+            onClick={leaveRoom}
+            className="bg-red-600 hover:bg-red-700 px-4 py-1.5 rounded text-sm text-white transition-colors"
+          >
+            Leave
           </button>
         </div>
+      </div>
 
-        <div className="flex-grow bg-gray-900">
-          {activeFile && currentFile ? (
-            <Editor
-              height="100%"
-              theme="vs-dark"
-              language={currentFile.language}
-              value={currentFile.content}
-              onChange={handleCodeChange}
-              path={currentFile.name}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              {Object.keys(files).length === 0
-                ? "Loading files..."
-                : "Select a file to start editing or create a new one."}
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        {/* Left Sidebar - File Explorer */}
+        <div className="w-64 min-w-[200px] max-w-[400px] bg-gray-50 dark:bg-[#252526] border-r border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0">
+          <div className="p-3 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                Explorer
+              </h2>
+              <button
+                onClick={() => setShowFileInput(!showFileInput)}
+                className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white text-lg font-bold w-6 h-6 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-[#2d2d30]"
+                title="New File"
+              >
+                +
+              </button>
+            </div>
+
+            {showFileInput && (
+              <input
+                type="text"
+                value={newFileName}
+                onChange={(e) => setNewFileName(e.target.value)}
+                onKeyDown={handleCreateFile}
+                placeholder="filename.ext"
+                className="w-full px-2 py-1 bg-white dark:bg-[#1e1e1e] border border-gray-300 dark:border-[#3e3e42] rounded text-xs focus:outline-none focus:border-blue-500"
+                autoFocus
+              />
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 min-h-0">
+            {Object.values(files).map((file) => (
+              <div
+                key={file.name}
+                onClick={() => setActiveFile(file.name)}
+                className={`flex justify-between items-center px-2 py-1.5 rounded cursor-pointer text-sm mb-0.5 group ${
+                  activeFile === file.name
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-[#2d2d30]"
+                }`}
+              >
+                <span className="text-xs truncate">{file.name}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteFile(file.name);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 text-xs transition-opacity"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Main Editor Area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Tab Bar */}
+          {activeFile && (
+            <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+              <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
+                {currentFile?.name}
+              </div>
             </div>
           )}
+
+          {/* Editor */}
+          <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
+            {activeFile && currentFile ? (
+              <Editor
+                height="100%"
+                theme={theme === "dark" ? "vs-dark" : "light"}
+                language={currentFile.language}
+                value={currentFile.content}
+                onChange={handleCodeChange}
+                path={currentFile.name}
+                onMount={handleEditorDidMount}
+                options={{
+                  fontSize: 14,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  suggest: {
+                    preview: true,
+                  },
+                  inlineSuggest: {
+                    enabled: true,
+                  },
+                }}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                {Object.keys(files).length === 0
+                  ? "Loading files..."
+                  : "Select a file to start editing or create a new one"}
+              </div>
+            )}
+          </div>
+
+          {/* Output Panel */}
+          <div className="h-48 min-h-[100px] bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+            <div className="bg-gray-100 dark:bg-[#252526] px-4 py-2 border-b border-gray-200 dark:border-[#1e1e1e]">
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                Output
+              </h3>
+            </div>
+            <div className="p-4 h-[calc(100%-36px)] overflow-auto">
+              <pre className="text-xs text-gray-800 dark:text-gray-300 whitespace-pre-wrap font-mono">
+                {isLoading && (
+                  <span className="text-yellow-500 dark:text-yellow-400">
+                    Executing code...
+                  </span>
+                )}
+                {output && (
+                  <span className="text-green-600 dark:text-green-400">
+                    {output}
+                  </span>
+                )}
+                {error && (
+                  <span className="text-red-600 dark:text-red-400">
+                    {error}
+                  </span>
+                )}
+                {!isLoading && !output && !error && (
+                  <span className="text-gray-400 dark:text-gray-600">
+                    No output yet. Run your code to see results.
+                  </span>
+                )}
+              </pre>
+            </div>
+          </div>
         </div>
 
-        <div className="h-1/4 bg-gray-950 p-4 overflow-auto border-t border-gray-700">
-          <h3 className="font-semibold text-lg mb-2">Output:</h3>
-          <pre className="text-gray-300 whitespace-pre-wrap">
-            {isLoading && "Executing code..."}
-            {output && <span className="text-green-400">{output}</span>}
-            {error && <span className="text-red-400">{error}</span>}
-          </pre>
+        {/* Right Sidebar - Active Users */}
+        <div className="w-64 min-w-[200px] max-w-[400px] bg-gray-50 dark:bg-[#252526] border-l border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0">
+          <div className="p-3 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+              Active Users ({clients.length})
+            </h2>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 min-h-0">
+            {clients.map((client) => (
+              <div
+                key={client.socketId}
+                className="flex items-center justify-between mb-3 p-2 rounded hover:bg-gray-200 dark:hover:bg-[#2d2d30] transition-colors"
+              >
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <Avatar
+                    name={client.username}
+                    size="32"
+                    round="6px"
+                    className="flex-shrink-0"
+                  />
+                  <span className="text-sm text-gray-800 dark:text-gray-300 truncate">
+                    {client.username}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleMuteToggle(client.socketId)}
+                  className="text-gray-400 hover:text-black dark:hover:text-white transition-colors flex-shrink-0 ml-2"
+                >
+                  {audioStatus[client.socketId] ? (
+                    <FaMicrophoneSlash className="text-red-500 dark:text-red-400" />
+                  ) : (
+                    <FaMicrophone className="text-green-500 dark:text-green-400" />
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
+
+      <div ref={audioRef} style={{ display: "none" }}></div>
     </div>
   );
 };
