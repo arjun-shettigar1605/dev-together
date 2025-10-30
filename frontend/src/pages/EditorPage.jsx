@@ -113,9 +113,24 @@ const EditorPage = () => {
             autoGainControl: true,
           },
         });
+
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = true;
+          console.log(`✅ Local audio track ${track.id} enabled on startup`);
+        });
+
         localStreamRef.current = stream;
         setLocalStream(stream);
         setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: false }));
+        console.log(
+          "🎤 Microphone access granted, track states:",
+          stream.getAudioTracks().map((t) => ({
+            id: t.id,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState,
+          }))
+        );
       } catch (err) {
         console.error("Could not access microphone:", err);
         toast.error("Microphone access denied or not available.");
@@ -546,10 +561,17 @@ const EditorPage = () => {
       return;
     }
 
+    // CRITICAL FIX: Ensure tracks are enabled
+    tracks.forEach((track) => {
+      track.enabled = true;
+      console.log(`✅ Enabled audio track ${track.id}`);
+    });
+
     // Remove existing audio element
     const existingAudio = document.getElementById(`audio-${socketId}`);
     if (existingAudio) {
       console.log("🗑️ Removing existing audio element");
+      existingAudio.pause();
       existingAudio.srcObject = null;
       existingAudio.remove();
     }
@@ -557,30 +579,95 @@ const EditorPage = () => {
     // Create new audio element
     const audio = document.createElement("audio");
     audio.id = `audio-${socketId}`;
-    audio.srcObject = remoteStream;
     audio.autoplay = true;
+    audio.playsInline = true; // CRITICAL for mobile
     audio.volume = 1.0;
+    audio.muted = false; // CRITICAL: Ensure not muted
 
+    // Set srcObject BEFORE adding to DOM
+    audio.srcObject = remoteStream;
+
+    // Add comprehensive event listeners
     audio.onloadedmetadata = () => {
       console.log(`✅ Audio metadata loaded for ${socketId}`);
-      audio
-        .play()
-        .then(() => {
-          console.log(`🔊 Audio playing for ${socketId}`);
-          console.log(`Audio element state:`, {
-            paused: audio.paused,
-            volume: audio.volume,
-            muted: audio.muted,
-            readyState: audio.readyState,
+
+      // CRITICAL FIX: Explicitly play with error handling
+      const playPromise = audio.play();
+
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log(`🔊 Audio SUCCESSFULLY playing for ${socketId}`);
+            console.log(`Audio element state:`, {
+              paused: audio.paused,
+              volume: audio.volume,
+              muted: audio.muted,
+              readyState: audio.readyState,
+              currentTime: audio.currentTime,
+              duration: audio.duration,
+            });
+
+            // Verify stream tracks are active
+            const streamTracks = audio.srcObject.getAudioTracks();
+            console.log(
+              `Active stream tracks:`,
+              streamTracks.map((t) => ({
+                enabled: t.enabled,
+                muted: t.muted,
+                readyState: t.readyState,
+              }))
+            );
+          })
+          .catch((e) => {
+            console.error(`❌ Audio play FAILED for ${socketId}:`, e.message);
+
+            // FALLBACK: Try to play on user interaction
+            console.log(`📢 Attempting manual play trigger for ${socketId}`);
+            document.addEventListener(
+              "click",
+              () => {
+                audio
+                  .play()
+                  .then(() =>
+                    console.log(`✅ Manual play succeeded for ${socketId}`)
+                  )
+                  .catch((err) =>
+                    console.error(`❌ Manual play also failed:`, err)
+                  );
+              },
+              { once: true }
+            );
           });
-        })
-        .catch((e) => {
-          console.error(`❌ Audio play failed for ${socketId}:`, e.message);
-        });
+      }
+    };
+
+    audio.onplay = () => {
+      console.log(`🎵 onplay event fired for ${socketId}`);
+    };
+
+    audio.onpause = () => {
+      console.log(`⏸️ onpause event fired for ${socketId}`);
     };
 
     audio.onerror = (e) => {
       console.error(`❌ Audio element error for ${socketId}:`, e);
+      console.error(`Error details:`, {
+        error: audio.error,
+        code: audio.error?.code,
+        message: audio.error?.message,
+      });
+    };
+
+    audio.onstalled = () => {
+      console.warn(`⚠️ Audio stalled for ${socketId}`);
+    };
+
+    audio.onwaiting = () => {
+      console.warn(`⏳ Audio waiting for ${socketId}`);
+    };
+
+    audio.oncanplay = () => {
+      console.log(`✅ Audio can play for ${socketId}`);
     };
 
     if (audioRef.current) {
@@ -591,6 +678,7 @@ const EditorPage = () => {
     }
   }
 
+
   function createPeer(userToSignal, callerID, stream) {
     console.log(`[createPeer] 🚀 Creating INITIATOR peer for: ${userToSignal}`);
 
@@ -599,8 +687,13 @@ const EditorPage = () => {
       return null;
     }
 
-    // Log local stream info
+    // CRITICAL FIX: Ensure local tracks are enabled
     const audioTracks = stream.getAudioTracks();
+    audioTracks.forEach((track) => {
+      track.enabled = true;
+      console.log(`✅ Enabled local audio track ${track.id} for transmission`);
+    });
+
     console.log(
       `Local audio tracks (${audioTracks.length}):`,
       audioTracks.map((t) => ({
@@ -664,6 +757,8 @@ const EditorPage = () => {
     return peer;
   }
 
+  // Update addPeer function similarly:
+
   function addPeer(incomingSignal, callerID, stream) {
     console.log(`[addPeer] 🚀 Creating NON-INITIATOR peer for: ${callerID}`);
 
@@ -672,8 +767,13 @@ const EditorPage = () => {
       return null;
     }
 
-    // Log local stream info
+    // CRITICAL FIX: Ensure local tracks are enabled
     const audioTracks = stream.getAudioTracks();
+    audioTracks.forEach((track) => {
+      track.enabled = true;
+      console.log(`✅ Enabled local audio track ${track.id} for transmission`);
+    });
+
     console.log(
       `Local audio tracks (${audioTracks.length}):`,
       audioTracks.map((t) => ({
@@ -723,7 +823,6 @@ const EditorPage = () => {
       console.log(`[addPeer] 🔌 Peer connection closed with ${callerID}`);
     });
 
-    // Signal with incoming offer AFTER all handlers are set up
     try {
       console.log(
         `[addPeer] 📥 Signaling peer with incoming OFFER from ${callerID}`
@@ -736,6 +835,7 @@ const EditorPage = () => {
 
     return peer;
   }
+
 
   const handleMuteToggle = (targetSocketId) => {
     if (!localStream) return;
