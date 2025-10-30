@@ -10,17 +10,18 @@ import Peer from "simple-peer";
 import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "../contexts/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
+import FileExplorer from "../components/FileExplorer";
 import {
   FaMicrophone,
   FaMicrophoneSlash,
   FaCopy,
   FaPlay,
   FaLightbulb,
-  FaMoon,
-  FaSun,
+  FaBroadcastTower, 
 } from "react-icons/fa";
 
 const getLanguageFromExtension = (filename) => {
+  if (!filename) return "plaintext";
   const extension = filename.split(".").pop();
   switch (extension) {
     case "js":
@@ -65,12 +66,12 @@ const EditorPage = () => {
   const fileRef = useRef(null);
   const localStreamRef = useRef(null);
   const filesRef = useRef({});
+  const previewWindowRef = useRef(null);
 
   const [clients, setClients] = useState([]);
   const [files, setFiles] = useState({});
-  const [activeFile, setActiveFile] = useState(null);
   const [showFileInput, setShowFileInput] = useState(false);
-  const [newFileName, setNewFileName] = useState("");
+  const [activeFileId, setActiveFileId] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isAiEnabled, setIsAiEnabled] = useState(false);
   const isAiEnabledRef = useRef(isAiEnabled);
@@ -107,11 +108,7 @@ const EditorPage = () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: false,
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
+          audio: true, // Use simple constraint
         });
 
         stream.getAudioTracks().forEach((track) => {
@@ -145,40 +142,40 @@ const EditorPage = () => {
     };
 
     const setupSocketListeners = () => {
-      socketRef.current.on("sync-filesystem", ({ files: receivedFiles }) => {
-        if (receivedFiles) {
-          setFiles(receivedFiles);
-          if (!isInitialized) {
-            setActiveFile(Object.keys(receivedFiles)[0]);
-            setIsInitialized(true);
+      // socketRef.current.on("sync-filesystem", ({ files: receivedFiles }) => {
+      //   if (receivedFiles) {
+      //     setFiles(receivedFiles);
+      //     if (!isInitialized) {
+      //       setActiveFile(Object.keys(receivedFiles)[0]);
+      //       setIsInitialized(true);
+      //     }
+      //   }
+      // });
+
+      socketRef.current.on("filesystem-updated", ({ files: receivedFiles }) => {
+        setFiles(receivedFiles);
+        if (!isInitialized) {
+          // Find the first file to open
+          const firstFile = Object.values(receivedFiles).find(
+            (f) => f.type === "file"
+          );
+          if (firstFile) {
+            setActiveFileId(firstFile.id);
           }
+          setIsInitialized(true);
         }
       });
 
-      socketRef.current.on("file-created", ({ file }) => {
-        setFiles((prev) => ({ ...prev, [file.name]: file }));
-        toast.success(`File "${file.name}" was created.`);
-      });
-
-      socketRef.current.on("file-deleted", ({ fileName }) => {
-        setFiles((prevFiles) => {
-          const newFiles = { ...prevFiles };
-          delete newFiles[fileName];
-          setActiveFile((currentActive) =>
-            currentActive === fileName
-              ? Object.keys(newFiles)[0] || null
-              : currentActive
-          );
-          return newFiles;
+      socketRef.current.on("code-change", ({ fileId, code }) => {
+        setFiles((prev) => {
+          if (prev[fileId]) {
+            return {
+              ...prev,
+              [fileId]: { ...prev[fileId], content: code },
+            };
+          }
+          return prev;
         });
-        toast.error(`File "${fileName}" was deleted.`);
-      });
-
-      socketRef.current.on("code-change", ({ file, code }) => {
-        setFiles((prev) => ({
-          ...prev,
-          [file]: { ...prev[file], content: code },
-        }));
       });
 
       socketRef.current.on("suggestion-result", ({ suggestion, requestId }) => {
@@ -407,7 +404,12 @@ const EditorPage = () => {
                 pendingRequests.set(requestId, { resolve, position });
 
                 const fullCode = model.getValue();
-                const language = getLanguageFromExtension(model.uri.path);
+                const file = Object.values(filesRef.current).find(
+                  (f) => f.id === model.uri.path.substring(1)
+                );
+                const language = file
+                  ? file.language
+                  : getLanguageFromExtension(model.uri.path);
                 const offset = model.getOffsetAt(position);
                 const codeBeforeCursor = fullCode.substring(0, offset);
                 const codeAfterCursor = fullCode.substring(offset);
@@ -457,6 +459,15 @@ const EditorPage = () => {
     };
   }, [isMonacoReady]);
 
+  const handleMoveItem = (itemId, newParentId) => {
+    // Basic validation to prevent dragging into thin air if state is weird
+    if (!files[newParentId] || files[newParentId].type !== "folder") {
+      toast.error("Invalid drop target.");
+      return;
+    }
+    socketRef.current.emit("file-move", { roomId, itemId, newParentId });
+  };
+
   const handleEditorDidMount = (editor, monaco) => {
     editorRef.current = editor;
     if (!monacoRef.current) {
@@ -465,63 +476,44 @@ const EditorPage = () => {
     }
   };
 
-  const handleCreateFile = (e) => {
-    if (e.key === "Enter" && newFileName.trim()) {
-      if (files[newFileName]) {
-        toast.error("A file with this name already exists.");
-        return;
-      }
-
-      const language = getLanguageFromExtension(newFileName);
-      const boilerplateContent =
-        boilerplates[language] || "// Start writing your code here.";
-
-      const newFile = {
-        name: newFileName,
-        language: language,
-        content: boilerplateContent,
-      };
-
-      setFiles((prev) => ({ ...prev, [newFileName]: newFile }));
-      setActiveFile(newFileName);
-      socketRef.current.emit("file-created", { roomId, file: newFile });
-      setNewFileName("");
-      setShowFileInput(false);
+  const handleCreateItem = (name, type, parentId) => {
+    // Basic validation
+    if (
+      Object.values(files).some(
+        (f) => f.parentId === parentId && f.name === name
+      )
+    ) {
+      toast.error("A file or folder with this name already exists here.");
+      return;
     }
+    socketRef.current.emit("file-create", { roomId, name, type, parentId });
   };
 
-  const handleDeleteFile = (fileName) => {
-    if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
-
-    socketRef.current.emit("file-deleted", { roomId, fileName });
-
-    const newFiles = { ...files };
-    delete newFiles[fileName];
-    setFiles(newFiles);
-
-    if (activeFile === fileName) {
-      const remainingFiles = Object.keys(newFiles);
-      setActiveFile(remainingFiles[0] || null);
+  const handleDeleteItem = (itemId) => {
+    socketRef.current.emit("file-delete", { roomId, itemId });
+    if (activeFileId === itemId) {
+      setActiveFileId(null);
     }
   };
 
   const handleCodeChange = (newCode) => {
-    if (activeFile && files[activeFile]) {
+    if (activeFileId && files[activeFileId]) {
+      // Optimistic local update
       setFiles((prevFiles) => ({
         ...prevFiles,
-        [activeFile]: { ...prevFiles[activeFile], content: newCode },
+        [activeFileId]: { ...prevFiles[activeFileId], content: newCode },
       }));
 
       socketRef.current.emit("code-change", {
         roomId,
-        file: activeFile,
+        fileId: activeFileId,
         code: newCode,
       });
     }
   };
 
   const handleRunCode = async () => {
-    const currentFile = files[activeFile];
+    const currentFile = files[activeFileId];
     if (!currentFile) return;
 
     setIsLoading(true);
@@ -542,6 +534,19 @@ const EditorPage = () => {
     }
   };
 
+  const handleLivePreview = () => {
+    const previewUrl = `/preview/${roomId}`;
+    if (!previewWindowRef.current || previewWindowRef.current.closed) {
+      previewWindowRef.current = window.open(
+        previewUrl,
+        "collab-preview",
+        "width=800,height=600"
+      );
+    } else {
+      previewWindowRef.current.focus();
+    }
+  };
+
   function attachAudioStream(socketId, remoteStream) {
     console.log(`🎵 Attaching audio stream for ${socketId}`);
 
@@ -553,6 +558,7 @@ const EditorPage = () => {
         enabled: t.enabled,
         muted: t.muted,
         readyState: t.readyState,
+        label: t.label,
       }))
     );
 
@@ -583,6 +589,12 @@ const EditorPage = () => {
     audio.playsInline = true; // CRITICAL for mobile
     audio.volume = 1.0;
     audio.muted = false; // CRITICAL: Ensure not muted
+
+    if (typeof audio.setSinkId === "function") {
+      audio.setSinkId("default").catch((err) => {
+        console.warn("Could not set audio sink:", err);
+      });
+    }
 
     // Set srcObject BEFORE adding to DOM
     audio.srcObject = remoteStream;
@@ -677,7 +689,6 @@ const EditorPage = () => {
       console.error("❌ audioRef.current is null!");
     }
   }
-
 
   function createPeer(userToSignal, callerID, stream) {
     console.log(`[createPeer] 🚀 Creating INITIATOR peer for: ${userToSignal}`);
@@ -836,7 +847,6 @@ const EditorPage = () => {
     return peer;
   }
 
-
   const handleMuteToggle = (targetSocketId) => {
     if (!localStream) return;
 
@@ -890,18 +900,25 @@ const EditorPage = () => {
     return null;
   }
 
-  const currentFile = files[activeFile];
+  const currentFile = files[activeFileId];
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white font-sans">
       <Toaster position="top-right" />
 
       {/* Top Navigation Bar */}
-      <div className="bg-gray-100 dark:bg-[#323233] h-12 flex items-center justify-between px-4 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+      <div className="bg-[#fffef0] dark:bg-[#1a1815] h-16 flex items-center justify-between px-4 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
         <div className="flex items-center gap-4 min-w-0">
-          <h1 className="text-lg font-semibold text-gray-900 dark:text-white flex-shrink-0">
-            CollabCode
-          </h1>
+          <div className="flex-shrink-0">
+            <img
+              src={theme === "dark" ? "/LogoDark.png" : "/LogoLight.png"}
+              alt="CollabCode"
+              className="h-10 w-auto"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          </div>
           <div className="flex items-center gap-2 bg-white dark:bg-[#1e1e1e] px-3 py-1.5 rounded min-w-0">
             <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
               Room:
@@ -921,6 +938,14 @@ const EditorPage = () => {
 
         <div className="flex items-center gap-3 flex-shrink-0">
           <button
+            onClick={handleLivePreview}
+            className="flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors bg-purple-600 hover:bg-purple-700 text-white"
+            title="Open Live Preview"
+          >
+            <FaBroadcastTower className="text-sm" />
+            <span className="text-xs">Preview</span>
+          </button>
+          <button
             onClick={() => setIsAiEnabled(!isAiEnabled)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${
               isAiEnabled
@@ -936,7 +961,7 @@ const EditorPage = () => {
           <button
             onClick={handleRunCode}
             className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-1.5 rounded text-sm text-white transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
-            disabled={isLoading || !activeFile}
+            disabled={isLoading || !activeFileId}
           >
             <FaPlay className="text-xs" />
             <span>{isLoading ? "Running..." : "Run"}</span>
@@ -955,63 +980,20 @@ const EditorPage = () => {
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left Sidebar - File Explorer */}
         <div className="w-64 min-w-[200px] max-w-[400px] bg-gray-50 dark:bg-[#252526] border-r border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0">
-          <div className="p-3 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                Explorer
-              </h2>
-              <button
-                onClick={() => setShowFileInput(!showFileInput)}
-                className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white text-lg font-bold w-6 h-6 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-[#2d2d30]"
-                title="New File"
-              >
-                +
-              </button>
-            </div>
-
-            {showFileInput && (
-              <input
-                type="text"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                onKeyDown={handleCreateFile}
-                placeholder="filename.ext"
-                className="w-full px-2 py-1 bg-white dark:bg-[#1e1e1e] border border-gray-300 dark:border-[#3e3e42] rounded text-xs focus:outline-none focus:border-blue-500"
-                autoFocus
-              />
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2 min-h-0">
-            {Object.values(files).map((file) => (
-              <div
-                key={file.name}
-                onClick={() => setActiveFile(file.name)}
-                className={`flex justify-between items-center px-2 py-1.5 rounded cursor-pointer text-sm mb-0.5 group ${
-                  activeFile === file.name
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-[#2d2d30]"
-                }`}
-              >
-                <span className="text-xs truncate">{file.name}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteFile(file.name);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 text-xs transition-opacity"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
+          <FileExplorer
+            files={files}
+            activeFileId={activeFileId}
+            onSelectFile={setActiveFileId}
+            onCreateItem={handleCreateItem}
+            onDeleteItem={handleDeleteItem}
+            onMoveItem={handleMoveItem}
+          />
         </div>
 
         {/* Main Editor Area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Tab Bar */}
-          {activeFile && (
+          {activeFileId && currentFile && (
             <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
               <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
                 {currentFile?.name}
@@ -1021,14 +1003,14 @@ const EditorPage = () => {
 
           {/* Editor */}
           <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
-            {activeFile && currentFile ? (
+            {activeFileId && currentFile ? (
               <Editor
                 height="100%"
                 theme={theme === "dark" ? "vs-dark" : "light"}
                 language={currentFile.language}
                 value={currentFile.content}
                 onChange={handleCodeChange}
-                path={currentFile.name}
+                path={currentFile.id}
                 onMount={handleEditorDidMount}
                 options={{
                   fontSize: 14,

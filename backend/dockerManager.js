@@ -30,6 +30,54 @@ const languageConfig = {
     command: (filename) => ["sh", "-c", `g++ ${filename} -o a.out && ./a.out`],
     extension: ".cpp",
   },
+  c: {
+    image: "gcc:latest",
+    command: (filename) => ["sh", "-c", `gcc ${filename} -o a.out && ./a.out`],
+    extension: ".c",
+  },
+  ruby: {
+    image: "ruby:3-slim",
+    command: (filename) => ["ruby", filename],
+    extension: ".rb",
+  },
+  dart: {
+    image: "dart:latest",
+    command: (filename) => ["dart", "run", filename],
+    extension: ".dart",
+  },
+  go: {
+    image: "golang:1.20-alpine",
+    command: (filename) => ["go", "run", filename],
+    extension: ".go",
+  },
+  php: {
+    image: "php:8-cli-alpine",
+    command: (filename) => ["php", filename],
+    extension: ".php",
+  },
+  rust: {
+    image: "rust:1-slim",
+    command: (filename) => [
+      "sh",
+      "-c",
+      `rustc ${filename} -o a.out && ./a.out`,
+    ],
+    extension: ".rs",
+  },
+  swift: {
+    image: "swift:5.8-slim",
+    command: (filename) => [
+      "sh",
+      "-c",
+      `swiftc ${filename} -o a.out && ./a.out`,
+    ],
+    extension: ".swift",
+  },
+  typescript: {
+    image: "ghcr.io/nodejs/ts-node:18", // Image with ts-node pre-installed
+    command: (filename) => ["ts-node", filename],
+    extension: ".ts",
+  },
 };
 
 const runCodeInContainer = async (language, code) => {

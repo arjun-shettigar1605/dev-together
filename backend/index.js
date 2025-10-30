@@ -48,14 +48,75 @@ function getAllClients(roomId) {
   });
 }
 
-// Initialize default file system for a room
+// create a nested file system for web development
 function initializeRoomFileSystem(roomId) {
   if (!roomFileSystems[roomId]) {
+    const rootId = uuidv4();
+    const htmlId = uuidv4();
+    const cssId = uuidv4();
+    const jsId = uuidv4();
+    const pyId = uuidv4();
+
     roomFileSystems[roomId] = {
-      "main.py": {
+      [rootId]: {
+        id: rootId,
+        name: "root",
+        type: "folder",
+        parentId: null,
+        children: [htmlId, cssId, jsId, pyId],
+      },
+      [htmlId]: {
+        id: htmlId,
+        name: "index.html",
+        type: "file",
+        language: "html",
+        content: `<h1>Hello, CollabCode!</h1>
+<p>Your HTML, CSS, and JavaScript are all linked up.</p>
+<div class="content">
+</div>
+`,
+        parentId: rootId,
+      },
+      [cssId]: {
+        id: cssId,
+        name: "style.css",
+        type: "file",
+        language: "css",
+        content: `body {
+  font-family: sans-serif;
+  background-color: #f4f4f4;
+  color: #333;
+}
+.content {
+  padding: 20px;
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}`,
+        parentId: rootId,
+      },
+      [jsId]: {
+        id: jsId,
+        name: "script.js",
+        type: "file",
+        language: "javascript",
+        content: `console.log("Welcome to the live preview!");
+// Your JavaScript code goes here
+`,
+        parentId: rootId,
+      },
+      [pyId]: {
+        id: pyId,
         name: "main.py",
+        type: "file",
         language: "python",
-        content: "# Welcome! Start coding in Python.",
+        content: `def main():
+    print("Hello from Python!")
+
+if __name__ == "__main__":
+    main()
+`,
+        parentId: rootId,
       },
     };
   }
@@ -75,7 +136,7 @@ io.on("connection", (socket) => {
     const clients = getAllClients(roomId);
 
     // Send current file state to the new user immediately
-    socket.emit("sync-filesystem", {
+    socket.emit("filesystem-updated", {
       files: roomFileSystems[roomId],
     });
 
@@ -106,28 +167,144 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Handle code changes and update server state
-  socket.on("code-change", ({ roomId, file, code }) => {
-    if (roomFileSystems[roomId] && roomFileSystems[roomId][file]) {
-      roomFileSystems[roomId][file].content = code;
+  // Handle preview window joining
+  socket.on("join-preview-room", ({ roomId }) => {
+    socket.join(roomId);
+    console.log(`Preview window joined room ${roomId}`);
+    // Send initial content
+    if (roomFileSystems[roomId]) {
+      socket.emit("live-preview-update", { files: roomFileSystems[roomId] });
     }
-    socket.to(roomId).emit("code-change", { file, code });
+  });
+
+  // Handle code changes and update server state
+  socket.on("code-change", ({ roomId, fileId, code }) => {
+    if (roomFileSystems[roomId] && roomFileSystems[roomId][fileId]) {
+      roomFileSystems[roomId][fileId].content = code;
+
+      // Broadcast to other editors
+      socket.to(roomId).emit("code-change", { fileId, code });
+
+      // NEW: Check if it's a web file and broadcast to preview windows
+      const file = roomFileSystems[roomId][fileId];
+      if (
+        file.name.endsWith(".html") ||
+        file.name.endsWith(".css") ||
+        file.name.endsWith(".js")
+      ) {
+        io.in(roomId).emit("live-preview-update", {
+          files: roomFileSystems[roomId],
+        });
+      }
+    }
   });
 
   // Handle file creation and update server state
-  socket.on("file-created", ({ roomId, file }) => {
-    if (roomFileSystems[roomId]) {
-      roomFileSystems[roomId][file.name] = file;
+  socket.on("file-create", ({ roomId, name, type, parentId }) => {
+    if (roomFileSystems[roomId] && roomFileSystems[roomId][parentId]) {
+      const language = getLanguageFromExtension(name);
+      const newItem = {
+        id: uuidv4(),
+        name,
+        type,
+        parentId,
+        language: type === "file" ? language : null,
+        content: type === "file" ? `// New file: ${name}\n` : null,
+        children: type === "folder" ? [] : null,
+      };
+
+      // Add new item to map
+      roomFileSystems[roomId][newItem.id] = newItem;
+      // Add new item to parent's children array
+      roomFileSystems[roomId][parentId].children.push(newItem.id);
+
+      // Broadcast the full filesystem update
+      io.in(roomId).emit("filesystem-updated", {
+        files: roomFileSystems[roomId],
+      });
     }
-    socket.to(roomId).emit("file-created", { file });
   });
 
   // Handle file deletion and update server state
-  socket.on("file-deleted", ({ roomId, fileName }) => {
-    if (roomFileSystems[roomId]) {
-      delete roomFileSystems[roomId][fileName];
+  socket.on("file-delete", ({ roomId, itemId }) => {
+    if (roomFileSystems[roomId] && roomFileSystems[roomId][itemId]) {
+      const itemToDelete = roomFileSystems[roomId][itemId];
+      const parentId = itemToDelete.parentId;
+
+      // Recursive delete function
+      const deleteRecursive = (id) => {
+        const item = roomFileSystems[roomId][id];
+        if (item.type === "folder") {
+          item.children.forEach(deleteRecursive);
+        }
+        delete roomFileSystems[roomId][id];
+      };
+
+      deleteRecursive(itemId);
+
+      // Remove from parent's children
+      if (parentId && roomFileSystems[roomId][parentId]) {
+        roomFileSystems[roomId][parentId].children = roomFileSystems[roomId][
+          parentId
+        ].children.filter((id) => id !== itemId);
+      }
+
+      // Broadcast the full filesystem update
+      io.in(roomId).emit("filesystem-updated", {
+        files: roomFileSystems[roomId],
+      });
     }
-    socket.to(roomId).emit("file-deleted", { fileName });
+  });
+
+  // NEW: Handle file drag-and-drop
+  socket.on("file-move", ({ roomId, itemId, newParentId }) => {
+    const fs = roomFileSystems[roomId];
+    if (
+      !fs ||
+      !fs[itemId] ||
+      !fs[newParentId] ||
+      fs[newParentId].type !== "folder"
+    ) {
+      console.warn("Invalid file move operation: Invalid IDs");
+      return;
+    }
+
+    const item = fs[itemId];
+    const oldParentId = item.parentId;
+
+    // Check if moving to the same parent
+    if (oldParentId === newParentId) {
+      console.log("Item already in target folder.");
+      return;
+    }
+
+    let currentParentId = newParentId;
+    while (currentParentId) {
+      if (currentParentId === itemId) {
+        console.warn("Cannot move folder into its own child.");
+        return;
+      }
+      const parentNode = fs[currentParentId];
+      currentParentId = parentNode ? parentNode.parentId : null;
+    }
+
+    // Remove from old parent's children array
+    if (oldParentId && fs[oldParentId]) {
+      fs[oldParentId].children = fs[oldParentId].children.filter(
+        (id) => id !== itemId
+      );
+    }
+
+    // Add to new parent's children array
+    fs[newParentId].children.push(itemId);
+
+    // Update item's parentId
+    item.parentId = newParentId;
+
+    // Broadcast the full filesystem update
+    io.in(roomId).emit("filesystem-updated", {
+      files: roomFileSystems[roomId],
+    });
   });
 
   //WebRTC signaling for audio chat
@@ -263,6 +440,28 @@ app.post("/api/execute", async (req, res) => {
     return res.status(400).json({ error: "Code is required." });
   }
 
+  const nonExecutable = [
+    "html",
+    "css",
+    "json",
+    "markdown",
+    "plaintext",
+    "md",
+    "txt",
+    "env",
+    undefined, // Handle missing language
+    null,
+  ];
+
+  if (nonExecutable.includes(language)) {
+    return res.status(400).json({
+      error:
+        language === "html" || language === "css"
+          ? "HTML/CSS is not executable. Use the Live Preview."
+          : `File type '${language || "unknown"}' is not executable.`,
+    });
+  }
+
   try {
     console.log("Starting code execution...");
     const output = await runCodeInContainer(language, code);
@@ -283,6 +482,51 @@ app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
+
+const getLanguageFromExtension = (filename) => {
+  if (!filename) return "plaintext";
+  const extension = filename.split(".").pop();
+  if (filename === ".env") return "env";
+
+  switch (extension) {
+    case "js":
+      return "javascript";
+    case "py":
+      return "python";
+    case "java":
+      return "java";
+    case "cpp":
+      return "cpp";
+    case "c":
+      return "c";
+    case "html":
+      return "html";
+    case "css":
+      return "css";
+    case "rb":
+      return "ruby";
+    case "dart":
+      return "dart";
+    case "json":
+      return "json";
+    case "md":
+      return "markdown";
+    case "txt":
+      return "plaintext";
+    case "go":
+      return "go";
+    case "php":
+      return "php";
+    case "rs":
+      return "rust";
+    case "swift":
+      return "swift";
+    case "ts":
+      return "typescript";
+    default:
+      return "plaintext";
+  }
+};
 
 server.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
