@@ -10,6 +10,7 @@ import {
   FaHtml5,
   FaJsSquare,
   FaFileAlt,
+  FaJava,
   FaFileInvoice,
 } from "react-icons/fa";
 import { LuFilePlus2 } from "react-icons/lu";
@@ -36,10 +37,7 @@ const getFileIcon = (fileName) => {
       <FaFileCode />
     );
   if (extension === "java")
-    return (
-      (SiIcons.SiJava && <SiIcons.SiJava className="text-red-400" />) ||
-      <FaFileCode />
-    );
+    return <FaJava className="text-red-400" />;
   if (extension === "cpp" || extension === "c")
     return (
       (SiIcons.SiCplusplus && <SiIcons.SiCplusplus className="text-blue-600" />) ||

@@ -91,8 +91,85 @@ const EditorPage = () => {
   const audioRef = useRef(null);
 
   useEffect(() => {
+    const initializeAudio = async () => {
+      try {
+        console.log("🎤 Initializing audio stream...");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+
+        // Start with muted audio
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = false; // Start muted
+        });
+
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+
+        // Set initial mute status
+        setAudioStatus((prev) => ({
+          ...prev,
+          [socketRef.current.id]: true,
+        }));
+
+        console.log("✅ Audio stream initialized (muted by default)");
+      } catch (err) {
+        console.error("❌ Could not initialize audio:", err);
+        setAudioStatus((prev) => ({
+          ...prev,
+          [socketRef.current.id]: true,
+        }));
+        toast.error("Microphone access denied. Audio chat disabled.");
+      }
+    };
+
+    initializeAudio();
+  }, []);
+
+
+  useEffect(() => {
     filesRef.current = files;
   }, [files]);
+
+  // enables audio on demand
+  const enableAudio = async () => {
+    if (localStreamRef.current) {
+      // Enable existing tracks
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+      });
+      console.log("✅ Enabled existing audio tracks");
+    } else {
+      // Get new stream if doesn't exist
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: true,
+        });
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+        console.log("✅ Created new audio stream");
+      } catch (err) {
+        console.error("❌ Could not access microphone:", err);
+        toast.error("Could not access microphone. Please check permissions.");
+        return;
+      }
+    }
+
+    // Update status and notify others
+    setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: false }));
+    socketRef.current.emit("mute-status-change", {
+      socketId: socketRef.current.id,
+      isMuted: false,
+    });
+    toast.success("Microphone enabled!");
+  };
+
 
   useEffect(() => {
     const init = async () => {
@@ -105,34 +182,6 @@ const EditorPage = () => {
         navigate("/");
       }
 
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: false,
-          audio: true, // Use simple constraint
-        });
-
-        stream.getAudioTracks().forEach((track) => {
-          track.enabled = true;
-          console.log(`✅ Local audio track ${track.id} enabled on startup`);
-        });
-
-        localStreamRef.current = stream;
-        setLocalStream(stream);
-        setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: false }));
-        console.log(
-          "🎤 Microphone access granted, track states:",
-          stream.getAudioTracks().map((t) => ({
-            id: t.id,
-            enabled: t.enabled,
-            muted: t.muted,
-            readyState: t.readyState,
-          }))
-        );
-      } catch (err) {
-        console.error("Could not access microphone:", err);
-        toast.error("Microphone access denied or not available.");
-      }
-
       setupSocketListeners();
 
       socketRef.current.emit("join-room", {
@@ -142,15 +191,11 @@ const EditorPage = () => {
     };
 
     const setupSocketListeners = () => {
-      // socketRef.current.on("sync-filesystem", ({ files: receivedFiles }) => {
-      //   if (receivedFiles) {
-      //     setFiles(receivedFiles);
-      //     if (!isInitialized) {
-      //       setActiveFile(Object.keys(receivedFiles)[0]);
-      //       setIsInitialized(true);
-      //     }
-      //   }
-      // });
+
+      // Set initial mute state for self (true = muted)
+      socketRef.current.on("connect", () => {
+        setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: true }));
+      });
 
       socketRef.current.on("filesystem-updated", ({ files: receivedFiles }) => {
         setFiles(receivedFiles);
@@ -220,13 +265,7 @@ const EditorPage = () => {
       socketRef.current.on("initiate-peer", ({ socketId }) => {
         console.log("🔌 initiate-peer received for:", socketId);
 
-        if (!socketId) {
-          console.error("❌ socketId is undefined in initiate-peer");
-          return;
-        }
-
-        if (socketRef.current.id === socketId) {
-          console.log("⚠️ Skipping - trying to connect to self");
+        if (!socketId || socketRef.current.id === socketId) {
           return;
         }
 
@@ -235,21 +274,27 @@ const EditorPage = () => {
           return;
         }
 
-        if (!localStreamRef.current) {
-          console.error("❌ No local stream available");
-          return;
-        }
+        // Wait briefly for stream to be available if needed
+        const attemptConnection = () => {
+          if (!localStreamRef.current) {
+            console.log("⏳ Waiting for local stream...");
+            setTimeout(attemptConnection, 100);
+            return;
+          }
 
-        console.log("✅ Creating peer (INITIATOR) for:", socketId);
-        const peer = createPeer(
-          socketId,
-          socketRef.current.id,
-          localStreamRef.current
-        );
+          console.log("✅ Creating peer (INITIATOR) for:", socketId);
+          const peer = createPeer(
+            socketId,
+            socketRef.current.id,
+            localStreamRef.current
+          );
 
-        if (peer) {
-          peersRef.current[socketId] = peer;
-        }
+          if (peer) {
+            peersRef.current[socketId] = peer;
+          }
+        };
+
+        attemptConnection();
       });
 
       // Handle incoming offer from initiator
@@ -338,19 +383,25 @@ const EditorPage = () => {
 
     return () => {
       console.log("Component cleanup - stopping audio tracks");
+
+      // Stop local stream
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           track.stop();
-          console.log("Stopped audio track on cleanup");
         });
+        localStreamRef.current = null;
       }
 
+      // Destroy all peers
       Object.values(peersRef.current).forEach((peer) => {
         if (peer) peer.destroy();
       });
+      peersRef.current = {};
 
+      // Clear pending requests
       pendingRequests.clear();
 
+      // Disconnect socket
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current.off();
@@ -691,34 +742,17 @@ const EditorPage = () => {
   }
 
   function createPeer(userToSignal, callerID, stream) {
-    console.log(`[createPeer] 🚀 Creating INITIATOR peer for: ${userToSignal}`);
+    console.log(`[createPeer] Creating peer for: ${userToSignal}`);
 
-    if (!userToSignal) {
-      console.error("❌ userToSignal is undefined!");
+    if (!userToSignal || !stream) {
+      console.error("❌ Missing userToSignal or stream");
       return null;
     }
-
-    // CRITICAL FIX: Ensure local tracks are enabled
-    const audioTracks = stream.getAudioTracks();
-    audioTracks.forEach((track) => {
-      track.enabled = true;
-      console.log(`✅ Enabled local audio track ${track.id} for transmission`);
-    });
-
-    console.log(
-      `Local audio tracks (${audioTracks.length}):`,
-      audioTracks.map((t) => ({
-        id: t.id,
-        enabled: t.enabled,
-        muted: t.muted,
-        readyState: t.readyState,
-      }))
-    );
 
     const peer = new Peer({
       initiator: true,
       trickle: false,
-      stream,
+      stream: stream, // Ensure stream is passed
       config: {
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -728,28 +762,18 @@ const EditorPage = () => {
     });
 
     peer.on("signal", (signal) => {
-      console.log(`[createPeer] 📤 Sending OFFER to ${userToSignal}`);
-      console.log(`Signal type:`, signal.type);
-      if (socketRef.current && socketRef.current.connected) {
+      console.log(`[createPeer] Sending offer to ${userToSignal}`);
+      if (socketRef.current?.connected) {
         socketRef.current.emit("sending-signal", {
           userToSignal,
           callerID,
           signal,
         });
-      } else {
-        console.error("❌ Socket not connected!");
       }
     });
 
     peer.on("connect", () => {
-      console.log(`[createPeer] ✅ PEER CONNECTED with ${userToSignal}`);
-    });
-
-    peer.on("error", (err) => {
-      console.error(
-        `[createPeer] ❌ PEER ERROR with ${userToSignal}:`,
-        err.message
-      );
+      console.log(`[createPeer] ✅ Peer connected with ${userToSignal}`);
     });
 
     peer.on("stream", (remoteStream) => {
@@ -759,10 +783,13 @@ const EditorPage = () => {
       attachAudioStream(userToSignal, remoteStream);
     });
 
+    peer.on("error", (err) => {
+      console.error(`[createPeer] Peer error with ${userToSignal}:`, err);
+    });
+
     peer.on("close", () => {
-      console.log(
-        `[createPeer] 🔌 Peer connection closed with ${userToSignal}`
-      );
+      console.log(`[createPeer] Peer connection closed with ${userToSignal}`);
+      delete peersRef.current[userToSignal];
     });
 
     return peer;
@@ -771,34 +798,17 @@ const EditorPage = () => {
   // Update addPeer function similarly:
 
   function addPeer(incomingSignal, callerID, stream) {
-    console.log(`[addPeer] 🚀 Creating NON-INITIATOR peer for: ${callerID}`);
+    console.log(`[addPeer] Creating peer for: ${callerID}`);
 
-    if (!callerID) {
-      console.error("❌ callerID is undefined!");
+    if (!callerID || !stream) {
+      console.error("❌ Missing callerID or stream");
       return null;
     }
-
-    // CRITICAL FIX: Ensure local tracks are enabled
-    const audioTracks = stream.getAudioTracks();
-    audioTracks.forEach((track) => {
-      track.enabled = true;
-      console.log(`✅ Enabled local audio track ${track.id} for transmission`);
-    });
-
-    console.log(
-      `Local audio tracks (${audioTracks.length}):`,
-      audioTracks.map((t) => ({
-        id: t.id,
-        enabled: t.enabled,
-        muted: t.muted,
-        readyState: t.readyState,
-      }))
-    );
 
     const peer = new Peer({
       initiator: false,
       trickle: false,
-      stream,
+      stream: stream, // Ensure stream is passed
       config: {
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -808,21 +818,14 @@ const EditorPage = () => {
     });
 
     peer.on("signal", (signal) => {
-      console.log(`[addPeer] 📤 Sending ANSWER to ${callerID}`);
-      console.log(`Signal type:`, signal.type);
-      if (socketRef.current && socketRef.current.connected) {
+      console.log(`[addPeer] Sending answer to ${callerID}`);
+      if (socketRef.current?.connected) {
         socketRef.current.emit("returning-signal", { signal, callerID });
-      } else {
-        console.error("❌ Socket not connected!");
       }
     });
 
     peer.on("connect", () => {
-      console.log(`[addPeer] ✅ PEER CONNECTED with ${callerID}`);
-    });
-
-    peer.on("error", (err) => {
-      console.error(`[addPeer] ❌ PEER ERROR with ${callerID}:`, err.message);
+      console.log(`[addPeer] ✅ Peer connected with ${callerID}`);
     });
 
     peer.on("stream", (remoteStream) => {
@@ -830,47 +833,53 @@ const EditorPage = () => {
       attachAudioStream(callerID, remoteStream);
     });
 
+    peer.on("error", (err) => {
+      console.error(`[addPeer] Peer error with ${callerID}:`, err);
+    });
+
     peer.on("close", () => {
-      console.log(`[addPeer] 🔌 Peer connection closed with ${callerID}`);
+      console.log(`[addPeer] Peer connection closed with ${callerID}`);
+      delete peersRef.current[callerID];
     });
 
     try {
-      console.log(
-        `[addPeer] 📥 Signaling peer with incoming OFFER from ${callerID}`
-      );
       peer.signal(incomingSignal);
     } catch (err) {
-      console.error("❌ Error during initial peer signal:", err.message);
+      console.error("❌ Error during initial peer signal:", err);
       return null;
     }
 
     return peer;
   }
 
-  const handleMuteToggle = (targetSocketId) => {
-    if (!localStream) return;
 
+  const handleMuteToggle = (targetSocketId) => {
     const myId = socketRef.current?.id;
+    if (!myId) return;
 
     if (targetSocketId === myId) {
-      const currentlyMuted = audioStatus[myId] || false;
-      const newMutedState = !currentlyMuted;
+      const currentlyMuted = audioStatus[myId] !== false; // Default to true if undefined
 
-      const audioTracks = localStream.getAudioTracks();
-      audioTracks.forEach((track) => {
-        track.enabled = !newMutedState;
-      });
-
-      setAudioStatus((prev) => ({ ...prev, [myId]: newMutedState }));
-
-      if (socketRef.current) {
-        socketRef.current.emit("mute-status-change", {
-          socketId: myId,
-          isMuted: newMutedState,
-        });
+      if (currentlyMuted) {
+        // Unmute - enable audio
+        enableAudio();
+      } else {
+        // Mute - disable audio
+        if (localStreamRef.current) {
+          localStreamRef.current.getAudioTracks().forEach((track) => {
+            track.enabled = false;
+          });
+          setAudioStatus((prev) => ({ ...prev, [myId]: true }));
+          socketRef.current.emit("mute-status-change", {
+            socketId: myId,
+            isMuted: true,
+          });
+          toast.success("Microphone muted");
+        }
       }
     }
   };
+
 
   const leaveRoom = () => {
     if (localStreamRef.current) {

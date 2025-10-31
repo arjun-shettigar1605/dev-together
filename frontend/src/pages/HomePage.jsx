@@ -53,9 +53,7 @@ const Header = () => {
 
 // Hero Section
 const Hero = () => (
-  // 5. Add dark: variants
-  <section className="relative flex flex-col items-center justify-center h-screen pt-20 text-center px-6">
-    <div className="absolute inset-0 bg-gradient-to-b from-transparent to-white dark:to-[#0B0F19] z-0"></div>
+  <section className="relative flex flex-col items-center justify-center h-screen pt-20 text-center px-6 bg-[#fffef0] dark:bg-[#0B0F19]">
     <div className="relative z-10 flex flex-col items-center">
       <div className="mb-4 inline-flex items-center gap-2 px-4 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-[#1A1F2A] rounded-full border border-gray-200 dark:border-[#2A303C]">
         <span className="text-blue-400">✨</span>
@@ -64,7 +62,7 @@ const Hero = () => (
       <h1 className="text-5xl md:text-7xl font-bold text-gray-900 dark:text-white mb-6">
         Code Together,
         <br />
-        <span className="bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+        <span className="bg-gradient-to-r from-[#f9943b] to-[#f9943b] bg-clip-text text-transparent">
           Ship Faster
         </span>
       </h1>
@@ -80,9 +78,6 @@ const Hero = () => (
         >
           Start Coding Now
         </Link>
-        <button className="px-6 py-3 text-base font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-[#1A1F2A] border border-gray-200 dark:border-[#2A303C] rounded-lg hover:bg-gray-200 dark:hover:bg-[#2A303C] transition-colors">
-          View Demo
-        </button>
       </div>
     </div>
   </section>
@@ -104,8 +99,7 @@ const FeatureCard = ({ icon: Icon, title, children }) => (
 
 // Features Section
 const Features = () => (
-  // 7. Add dark: variants
-  <section className="py-24 px-6">
+  <section className="py-24 px-6 ">
     <div className="max-w-5xl mx-auto">
       <h2 className="text-4xl font-bold text-gray-900 dark:text-white text-center mb-6">
         Everything you need to collaborate
@@ -133,15 +127,13 @@ const Features = () => (
 
 // CTA Section
 const CTA = () => (
-  // 8. No changes needed, already uses bright colors
   <section className="py-24 px-6">
     <div className="max-w-4xl mx-auto text-center bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg p-16">
       <h2 className="text-4xl font-bold text-white mb-4">
         Ready to start coding?
       </h2>
       <p className="text-lg text-blue-100 mb-8">
-        Join thousands of developers collaborating in real-time. No credit card
-        required.
+        Join thousands of developers collaborating in real-time.
       </p>
       <Link
         to="/join"
@@ -158,7 +150,7 @@ const Footer = () => (
   // 9. Add dark: variants
   <footer className="py-12 px-6 text-center">
     <p className="text-gray-500 dark:text-gray-500">
-      &copy; {new Date().getFullYear()} CollabCode. All rights reserved.
+      &copy; {new Date().getFullYear()} CoCode. All rights reserved.
     </p>
   </footer>
 );
@@ -167,7 +159,7 @@ const Footer = () => (
 const HomePage = () => {
   return (
     // 10. Add dark: variants
-    <div className="bg-white dark:bg-[#0B0F19] min-h-screen text-gray-900 dark:text-white">
+    <div className="bg-[#fffef0] dark:bg-[#0B0F19] min-h-screen text-gray-900 dark:text-white">
       <Header />
       <main>
         <Hero />

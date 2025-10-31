@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 import ThemeToggle from "../components/ThemeToggle";
-import { FaUserPlus, FaSignInAlt } from "react-icons/fa";
+import { FaUserPlus, FaSignInAlt, FaArrowLeft } from "react-icons/fa";
 import { useTheme } from "../contexts/ThemeContext";
 
 const JoinRoom = () => {
@@ -52,6 +52,16 @@ const JoinRoom = () => {
 
   return (
     <div className="min-h-screen bg-[#fffef0] dark:bg-[#0b0f19] flex items-center justify-center text-gray-900 dark:text-white transition-colors">
+      <div className="absolute top-5 left-4">
+        <Link
+          to="/"
+          className="flex items-center gap-1.5 text-sm font-medium text-[#f9943b] hover:text-[#ffb06b] transition-colors"
+          title="Back to Home"
+        >
+          <FaArrowLeft />
+          Home
+        </Link>
+      </div>
       <div className="bg-[#fffef0] dark:bg-[#1a1815] p-8 rounded-lg shadow-lg w-full max-w-md relative border border-gray-200 dark:border-[#2A303C]">
         <div className="absolute top-4 right-4">
           <ThemeToggle />
