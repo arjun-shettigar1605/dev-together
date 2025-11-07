@@ -351,20 +351,20 @@ const FileExplorer = ({
     <div className="flex flex-col h-full">
       <div className="p-3 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
         <div className="flex items-center justify-between">
-          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+          <h2 className="text-[0.85rem] font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
             Explorer
           </h2>
           <div className="flex items-center gap-3">
             <button
               onClick={() => handleShowCreate("file")}
-              className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white"
+              className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white text-xl"
               title="New File"
             >
               <LuFilePlus2 />
             </button>
             <button
               onClick={() => handleShowCreate("folder")}
-              className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white"
+              className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white text-xl"
               title="New Folder"
             >
               <TbFolderPlus />

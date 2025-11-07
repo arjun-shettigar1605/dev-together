@@ -155,10 +155,7 @@ const runCodeInContainer = async (language, code) => {
     const logs = await container.logs({ stdout: true, stderr: true });
 
     // The logs can contain non-printable characters, so we clean them up
-    const logString = logs
-      .toString("utf8")
-      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ""); // Keep newlines and tabs
-
+    const logString = logs.toString("utf8").replace(/[^\x20-\x7E\n\t]/g, ""); // This strips all non-printable ASCII chars
     console.log(`Execution completed with status: ${result.StatusCode}`);
     console.log("Raw output:", logString);
 

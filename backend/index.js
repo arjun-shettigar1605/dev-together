@@ -4,8 +4,8 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 const { Mistral } = require("@mistralai/mistralai");
 require("dotenv").config();
-
 const { v4: uuidv4 } = require("uuid");
+
 const { runCodeInContainer } = require("./dockerManager");
 
 const app = express();
@@ -35,8 +35,27 @@ app.use(express.json());
 
 const userSocketMap = {};
 const roomSocketMap = {};
-// Store room file systems on the server
 const roomFileSystems = {};
+// Store room file systems on the server
+
+
+//generates random characters for roomID
+const getRandomChars = (length) => {
+  const chars = "abcdefghijklmnopqrstuvwxyz";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+// GMeet stlyed Room ID generator (appends part 1,2,3)
+const generateRoomId = () => {
+  const part1 = getRandomChars(3);
+  const part2 = getRandomChars(4);
+  const part3 = getRandomChars(3);
+  return `${part1}-${part2}-${part3}`;
+};
 
 function getAllClients(roomId) {
   const socketIds = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
@@ -426,7 +445,7 @@ Do not repeat code that is already in the suffix (the 'code after' part).`,
 });
 
 app.get("/api/create-room", (req, res) => {
-  const roomId = uuidv4();
+  const roomId = generateRoomId();
   console.log(`New room created with ID: ${roomId}`);
   res.status(200).json({ roomId });
 });

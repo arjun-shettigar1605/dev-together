@@ -11,6 +11,14 @@ import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "../contexts/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
 import FileExplorer from "../components/FileExplorer";
+
+
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+}from "react-resizable-panels"; 
+
 import {
   FaMicrophone,
   FaMicrophoneSlash,
@@ -986,9 +994,18 @@ const EditorPage = () => {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden min-h-0">
+      {/* 2. Replace the main flex container with PanelGroup */}
+      <PanelGroup
+        direction="horizontal"
+        className="flex flex-1 overflow-hidden min-h-0"
+      >
         {/* Left Sidebar - File Explorer */}
-        <div className="w-64 min-w-[200px] max-w-[400px] bg-gray-50 dark:bg-[#252526] border-r border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0">
+        <Panel
+          defaultSize={20}
+          minSize={15}
+          maxSize={30}
+          className="min-w-[200px] max-w-[500px] bg-gray-50 dark:bg-[#252526] border-r border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
+        >
           <FileExplorer
             files={files}
             activeFileId={activeFileId}
@@ -997,88 +1014,121 @@ const EditorPage = () => {
             onDeleteItem={handleDeleteItem}
             onMoveItem={handleMoveItem}
           />
-        </div>
+        </Panel>
 
-        {/* Main Editor Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Tab Bar */}
-          {activeFileId && currentFile && (
-            <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
-              <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
-                {currentFile?.name}
+        {/* Left Resize Handle */}
+        <PanelResizeHandle />
+
+        {/* Main Editor Area (Center) */}
+        <Panel
+          defaultSize={60}
+          minSize={30}
+          className="flex-1 flex flex-col min-w-0"
+        >
+          {/* 3. Wrap Editor and Output in a *vertical* PanelGroup */}
+          <PanelGroup direction="vertical">
+            {/* Editor Panel */}
+            <Panel
+              defaultSize={70}
+              minSize={30}
+              className="flex flex-col min-h-0"
+            >
+              {/* Tab Bar */}
+              {activeFileId && currentFile && (
+                <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+                  <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
+                    {currentFile?.name}
+                  </div>
+                </div>
+              )}
+
+              {/* Editor */}
+              <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
+                {activeFileId && currentFile ? (
+                  <Editor
+                    height="100%"
+                    theme={theme === "dark" ? "vs-dark" : "light"}
+                    language={currentFile.language}
+                    value={currentFile.content}
+                    onChange={handleCodeChange}
+                    path={currentFile.id}
+                    onMount={handleEditorDidMount}
+                    options={{
+                      fontSize: 14,
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      automaticLayout: true,
+                      suggest: {
+                        preview: true,
+                      },
+                      inlineSuggest: {
+                        enabled: true,
+                      },
+                    }}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                    {Object.keys(files).length === 0
+                      ? "Loading files..."
+                      : "Select a file to start editing or create a new one"}
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            </Panel>
 
-          {/* Editor */}
-          <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
-            {activeFileId && currentFile ? (
-              <Editor
-                height="100%"
-                theme={theme === "dark" ? "vs-dark" : "light"}
-                language={currentFile.language}
-                value={currentFile.content}
-                onChange={handleCodeChange}
-                path={currentFile.id}
-                onMount={handleEditorDidMount}
-                options={{
-                  fontSize: 14,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  automaticLayout: true,
-                  suggest: {
-                    preview: true,
-                  },
-                  inlineSuggest: {
-                    enabled: true,
-                  },
-                }}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                {Object.keys(files).length === 0
-                  ? "Loading files..."
-                  : "Select a file to start editing or create a new one"}
+            {/* Bottom Resize Handle */}
+            <PanelResizeHandle />
+
+            {/* Output Panel */}
+            <Panel
+              defaultSize={30}
+              minSize={15}
+              maxSize={50}
+              className="min-h-[100px] bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
+            >
+              <div className="bg-gray-100 dark:bg-[#252526] px-4 py-2 border-b border-gray-200 dark:border-[#1e1e1e]">
+                <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                  Output
+                </h3>
               </div>
-            )}
-          </div>
+              <div className="flex-1 p-4 h-[calc(100%-36px)] overflow-auto">
+                <pre className="text-xs text-gray-800 dark:text-gray-300 whitespace-pre-wrap font-mono">
+                  {isLoading && (
+                    <span className="text-yellow-500 dark:text-yellow-400">
+                      Executing code...
+                    </span>
+                  )}
+                  {output && (
+                    <span className="text-green-600 dark:text-green-400">
+                      {output}
+                    </span>
+                  )}
+                  {error && (
+                    <span className="text-red-600 dark:text-red-400">
+                      {error}
+                    </span>
+                  )}
+                  {!isLoading && !output && !error && (
+                    <span className="text-gray-400 dark:text-gray-600">
+                      No output yet. Run your code to see results.
+                    </span>
+                  )}
+                </pre>
+              </div>
+            </Panel>
+          </PanelGroup>
+        </Panel>
 
-          {/* Output Panel */}
-          <div className="h-48 min-h-[100px] bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
-            <div className="bg-gray-100 dark:bg-[#252526] px-4 py-2 border-b border-gray-200 dark:border-[#1e1e1e]">
-              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                Output
-              </h3>
-            </div>
-            <div className="p-4 h-[calc(100%-36px)] overflow-auto">
-              <pre className="text-xs text-gray-800 dark:text-gray-300 whitespace-pre-wrap font-mono">
-                {isLoading && (
-                  <span className="text-yellow-500 dark:text-yellow-400">
-                    Executing code...
-                  </span>
-                )}
-                {output && (
-                  <span className="text-green-600 dark:text-green-400">
-                    {output}
-                  </span>
-                )}
-                {error && (
-                  <span className="text-red-600 dark:text-red-400">
-                    {error}
-                  </span>
-                )}
-                {!isLoading && !output && !error && (
-                  <span className="text-gray-400 dark:text-gray-600">
-                    No output yet. Run your code to see results.
-                  </span>
-                )}
-              </pre>
-            </div>
-          </div>
-        </div>
+        {/* Right Resize Handle */}
+        <PanelResizeHandle />
 
         {/* Right Sidebar - Active Users */}
-        <div className="w-64 min-w-[200px] max-w-[400px] bg-gray-50 dark:bg-[#252526] border-l border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0">
+        <Panel
+          defaultSize={20}
+          minSize={15}
+          maxSize={30}
+          className="min-w-[200px] max-w-[500px] bg-gray-50 dark:bg-[#252526] border-l border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
+        >
           <div className="p-3 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
               Active Users ({clients.length})
@@ -1090,6 +1140,7 @@ const EditorPage = () => {
                 key={client.socketId}
                 className="flex items-center justify-between mb-3 p-2 rounded hover:bg-gray-200 dark:hover:bg-[#2d2d30] transition-colors"
               >
+                {/* ... avatar and username ... */}
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <Avatar
                     name={client.username}
@@ -1101,11 +1152,13 @@ const EditorPage = () => {
                     {client.username}
                   </span>
                 </div>
+                {/* ... mute button ... */}
                 <button
                   onClick={() => handleMuteToggle(client.socketId)}
                   className="text-gray-400 hover:text-black dark:hover:text-white transition-colors flex-shrink-0 ml-2"
                 >
-                  {audioStatus[client.socketId] ? (
+                  {audioStatus[client.socketId] === undefined ||
+                  audioStatus[client.socketId] === true ? (
                     <FaMicrophoneSlash className="text-red-500 dark:text-red-400" />
                   ) : (
                     <FaMicrophone className="text-green-500 dark:text-green-400" />
@@ -1114,8 +1167,8 @@ const EditorPage = () => {
               </div>
             ))}
           </div>
-        </div>
-      </div>
+        </Panel>
+      </PanelGroup>
 
       <div ref={audioRef} style={{ display: "none" }}></div>
     </div>

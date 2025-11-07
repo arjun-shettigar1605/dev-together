@@ -26,3 +26,23 @@
     @apply absolute left-2 top-[10px] w-2.5 h-px bg-gray-300 dark:bg-gray-700;
   }
 }
+
+[data-panel-resize-handle-id] {
+  @apply z-20;
+}
+
+[data-panel-resize-handle-id][data-orientation="horizontal"] {
+  @apply h-1.5 cursor-row-resize;
+}
+
+[data-panel-resize-handle-id][data-orientation="vertical"] {
+  @apply w-1.5 cursor-col-resize;
+}
+
+[data-panel-resize-handle-id]:hover {
+  @apply bg-blue-500/50 transition-colors duration-200;
+}
+
+[data-panel-id] {
+  @apply flex flex-col;
+}
