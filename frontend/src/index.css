@@ -46,3 +46,20 @@
 [data-panel-id] {
   @apply flex flex-col;
 }
+
+
+@layer utilities {
+    .pulse-green {
+    animation: pulse-green 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse-green {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+}

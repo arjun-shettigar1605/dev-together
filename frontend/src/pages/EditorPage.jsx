@@ -12,7 +12,6 @@ import { useTheme } from "../contexts/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
 import FileExplorer from "../components/FileExplorer";
 
-
 import {
   Panel,
   PanelGroup,
@@ -25,7 +24,8 @@ import {
   FaCopy,
   FaPlay,
   FaLightbulb,
-  FaBroadcastTower, 
+  FaBroadcastTower,
+  FaCrown,
 } from "react-icons/fa";
 
 const getLanguageFromExtension = (filename) => {
@@ -97,11 +97,12 @@ const EditorPage = () => {
   const [audioStatus, setAudioStatus] = useState({});
   const peersRef = useRef({});
   const audioRef = useRef(null);
+  
+  const [showMicPrompt, setShowMicPrompt] = useState(true);
 
   useEffect(() => {
     const initializeAudio = async () => {
       try {
-        console.log("🎤 Initializing audio stream...");
         const stream = await navigator.mediaDevices.getUserMedia({
           video: false,
           audio: {
@@ -124,8 +125,6 @@ const EditorPage = () => {
           ...prev,
           [socketRef.current.id]: true,
         }));
-
-        console.log("✅ Audio stream initialized (muted by default)");
       } catch (err) {
         console.error("❌ Could not initialize audio:", err);
         setAudioStatus((prev) => ({
@@ -151,7 +150,6 @@ const EditorPage = () => {
       localStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = true;
       });
-      console.log("✅ Enabled existing audio tracks");
     } else {
       // Get new stream if doesn't exist
       try {
@@ -161,7 +159,6 @@ const EditorPage = () => {
         });
         localStreamRef.current = stream;
         setLocalStream(stream);
-        console.log("✅ Created new audio stream");
       } catch (err) {
         console.error("❌ Could not access microphone:", err);
         toast.error("Could not access microphone. Please check permissions.");
@@ -254,13 +251,11 @@ const EditorPage = () => {
         }
       });
 
-      // FIXED: Only update clients list, don't handle WebRTC here
+      // Only update clients list, don't handle WebRTC here
       socketRef.current.on("user-joined", ({ clients, username, socketId }) => {
-        console.log("📢 user-joined:", {
-          username,
-          socketId,
-          myId: socketRef.current.id,
-        });
+        
+
+        console.log("Received clients list:", clients);
 
         if (username && socketId !== socketRef.current.id) {
           toast.success(`${username} joined the room.`);
@@ -269,23 +264,20 @@ const EditorPage = () => {
         setClients(clients);
       });
 
-      // NEW: Handle server instruction to initiate peer connection
+      // Handle server instruction to initiate peer connection
       socketRef.current.on("initiate-peer", ({ socketId }) => {
-        console.log("🔌 initiate-peer received for:", socketId);
 
         if (!socketId || socketRef.current.id === socketId) {
           return;
         }
 
         if (peersRef.current[socketId]) {
-          console.log("⚠️ Peer already exists for", socketId);
           return;
         }
 
         // Wait briefly for stream to be available if needed
         const attemptConnection = () => {
           if (!localStreamRef.current) {
-            console.log("⏳ Waiting for local stream...");
             setTimeout(attemptConnection, 100);
             return;
           }
@@ -305,9 +297,32 @@ const EditorPage = () => {
         attemptConnection();
       });
 
+      // for host changes
+      socketRef.current.on("host-changed", ({ newHostId }) => {
+        let newHostUsername = ""; // Variable to store the username
+
+        setClients((prevClients) => {
+          // Find the new host from the *previous* state (before mapping)
+          const newHost = prevClients.find((c) => c.socketId === newHostId);
+          if (newHost) {
+            newHostUsername = newHost.username;
+          }
+
+          // Return the new state
+          return prevClients.map((client) => ({
+            ...client,
+            isHost: client.socketId === newHostId,
+          }));
+        });
+
+        // Show toast *after* the state update has been queued
+        if (newHostUsername) {
+          toast.success(`${newHostUsername} is now the host.`);
+        }
+      });
+
       // Handle incoming offer from initiator
       socketRef.current.on("user-joined-signal", ({ signal, callerID }) => {
-        console.log("📨 user-joined-signal from:", callerID);
 
         if (!callerID) {
           console.error("❌ callerID is undefined");
@@ -323,8 +338,6 @@ const EditorPage = () => {
           console.error("❌ No local stream available");
           return;
         }
-
-        console.log("✅ Adding peer (NON-INITIATOR) for:", callerID);
         const peer = addPeer(signal, callerID, localStreamRef.current);
 
         if (peer) {
@@ -334,7 +347,6 @@ const EditorPage = () => {
 
       // Handle answer from receiver
       socketRef.current.on("receiving-returned-signal", ({ signal, id }) => {
-        console.log("📨 receiving-returned-signal from:", id);
         const peer = peersRef.current[id];
 
         if (!peer) {
@@ -348,7 +360,6 @@ const EditorPage = () => {
         }
 
         try {
-          console.log("✅ Signaling peer with answer:", id);
           peer.signal(signal);
         } catch (err) {
           console.error("❌ Error signaling peer:", id, err.message);
@@ -356,13 +367,11 @@ const EditorPage = () => {
       });
 
       socketRef.current.on("user-left", ({ socketId, username }) => {
-        console.log("👋 User left:", username, socketId);
         toast.error(`${username} left the room.`);
 
         if (peersRef.current[socketId]) {
           try {
-            peersRef.current[socketId].destroy();
-            console.log("✅ Destroyed peer for:", socketId);
+            peersRef.current[socketId].destroy(); 
           } catch (err) {
             console.error("❌ Error destroying peer:", err);
           }
@@ -373,7 +382,6 @@ const EditorPage = () => {
         if (audioEl) {
           audioEl.srcObject = null;
           audioEl.remove();
-          console.log("✅ Removed audio element for:", socketId);
         }
 
         setClients((prev) =>
@@ -382,7 +390,6 @@ const EditorPage = () => {
       });
 
       socketRef.current.on("mute-status-updated", ({ socketId, isMuted }) => {
-        console.log("🔇 Mute status updated:", socketId, isMuted);
         setAudioStatus((prev) => ({ ...prev, [socketId]: isMuted }));
       });
     };
@@ -390,7 +397,6 @@ const EditorPage = () => {
     init();
 
     return () => {
-      console.log("Component cleanup - stopping audio tracks");
 
       // Stop local stream
       if (localStreamRef.current) {
@@ -607,20 +613,9 @@ const EditorPage = () => {
   };
 
   function attachAudioStream(socketId, remoteStream) {
-    console.log(`🎵 Attaching audio stream for ${socketId}`);
 
     const tracks = remoteStream.getAudioTracks();
-    console.log(
-      `Audio tracks (${tracks.length}):`,
-      tracks.map((t) => ({
-        id: t.id,
-        enabled: t.enabled,
-        muted: t.muted,
-        readyState: t.readyState,
-        label: t.label,
-      }))
-    );
-
+    
     if (tracks.length === 0) {
       console.error("❌ No audio tracks in remote stream!");
       return;
@@ -629,13 +624,11 @@ const EditorPage = () => {
     // CRITICAL FIX: Ensure tracks are enabled
     tracks.forEach((track) => {
       track.enabled = true;
-      console.log(`✅ Enabled audio track ${track.id}`);
     });
 
     // Remove existing audio element
     const existingAudio = document.getElementById(`audio-${socketId}`);
     if (existingAudio) {
-      console.log("🗑️ Removing existing audio element");
       existingAudio.pause();
       existingAudio.srcObject = null;
       existingAudio.remove();
@@ -660,7 +653,6 @@ const EditorPage = () => {
 
     // Add comprehensive event listeners
     audio.onloadedmetadata = () => {
-      console.log(`✅ Audio metadata loaded for ${socketId}`);
 
       // CRITICAL FIX: Explicitly play with error handling
       const playPromise = audio.play();
@@ -668,32 +660,14 @@ const EditorPage = () => {
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
-            console.log(`🔊 Audio SUCCESSFULLY playing for ${socketId}`);
-            console.log(`Audio element state:`, {
-              paused: audio.paused,
-              volume: audio.volume,
-              muted: audio.muted,
-              readyState: audio.readyState,
-              currentTime: audio.currentTime,
-              duration: audio.duration,
-            });
 
             // Verify stream tracks are active
             const streamTracks = audio.srcObject.getAudioTracks();
-            console.log(
-              `Active stream tracks:`,
-              streamTracks.map((t) => ({
-                enabled: t.enabled,
-                muted: t.muted,
-                readyState: t.readyState,
-              }))
-            );
           })
           .catch((e) => {
             console.error(`❌ Audio play FAILED for ${socketId}:`, e.message);
 
             // FALLBACK: Try to play on user interaction
-            console.log(`📢 Attempting manual play trigger for ${socketId}`);
             document.addEventListener(
               "click",
               () => {
@@ -846,7 +820,6 @@ const EditorPage = () => {
     });
 
     peer.on("close", () => {
-      console.log(`[addPeer] Peer connection closed with ${callerID}`);
       delete peersRef.current[callerID];
     });
 
@@ -994,7 +967,6 @@ const EditorPage = () => {
         </div>
       </div>
 
-      {/* 2. Replace the main flex container with PanelGroup */}
       <PanelGroup
         direction="horizontal"
         className="flex flex-1 overflow-hidden min-h-0"
@@ -1134,38 +1106,75 @@ const EditorPage = () => {
               Active Users ({clients.length})
             </h2>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 min-h-0">
-            {clients.map((client) => (
-              <div
-                key={client.socketId}
-                className="flex items-center justify-between mb-3 p-2 rounded hover:bg-gray-200 dark:hover:bg-[#2d2d30] transition-colors"
-              >
-                {/* ... avatar and username ... */}
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <Avatar
-                    name={client.username}
-                    size="32"
-                    round="6px"
-                    className="flex-shrink-0"
-                  />
-                  <span className="text-sm text-gray-800 dark:text-gray-300 truncate">
-                    {client.username}
-                  </span>
-                </div>
-                {/* ... mute button ... */}
-                <button
-                  onClick={() => handleMuteToggle(client.socketId)}
-                  className="text-gray-400 hover:text-black dark:hover:text-white transition-colors flex-shrink-0 ml-2"
+          <div className="flex-1 overflow-y-auto p-3 min-h-0 space-y-3">
+            {clients.map((client) => {
+              const isMuted =
+                audioStatus[client.socketId] === undefined ||
+                audioStatus[client.socketId] === true;
+              const isMe = client.socketId === socketRef.current?.id;
+
+              return (
+                <div
+                  key={client.socketId}
+                  className="flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-[#2d2d30] shadow-sm border border-gray-200 dark:border-transparent"
                 >
-                  {audioStatus[client.socketId] === undefined ||
-                  audioStatus[client.socketId] === true ? (
-                    <FaMicrophoneSlash className="text-red-500 dark:text-red-400" />
-                  ) : (
-                    <FaMicrophone className="text-green-500 dark:text-green-400" />
-                  )}
-                </button>
-              </div>
-            ))}
+                  {/* Avatar with Mute Overlay */}
+                  <div className="relative flex-shrink-0">
+                    <Avatar name={client.username} size="40" round="8px" />
+                    {isMe && ( // Only show mute toggle for the current user
+                      <button
+                        onClick={() => handleMuteToggle(client.socketId)}
+                        className="absolute -bottom-1 -right-1 flex items-center justify-center w-5 h-5 bg-white dark:bg-gray-600 rounded-full border dark:border-gray-500 cursor-pointer"
+                        title={isMuted ? "Unmute" : "Mute"}
+                      >
+                        {isMuted ? (
+                          <FaMicrophoneSlash className="text-red-500 text-xs" />
+                        ) : (
+                          <FaMicrophone className="text-green-500 text-xs" />
+                        )}
+                      </button>
+                    )}
+                    {!isMe && ( // Show status for other users
+                      <div className="absolute -bottom-1 -right-1 flex items-center justify-center w-5 h-5 bg-white dark:bg-gray-600 rounded-full border dark:border-gray-500">
+                        {isMuted ? (
+                          <FaMicrophoneSlash className="text-red-500 text-xs" />
+                        ) : (
+                          <FaMicrophone className="text-green-500 text-xs" />
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Name and Status */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                        {client.username} {isMe ? "(You)" : ""}
+                      </span>
+                      {client.isHost && (
+                        <FaCrown
+                          className="text-yellow-500 flex-shrink-0"
+                          title="Room Host"
+                        />
+                      )}
+                    </div>
+                    {/* "LIVE" indicator */}
+                    {!isMuted ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-green-500 rounded-full pulse-green"></span>
+                        <span className="text-xs font-medium text-green-500">
+                          LIVE
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        Muted
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </Panel>
       </PanelGroup>

@@ -36,6 +36,7 @@ app.use(express.json());
 const userSocketMap = {};
 const roomSocketMap = {};
 const roomFileSystems = {};
+const roomHosts = {};
 // Store room file systems on the server
 
 
@@ -59,10 +60,12 @@ const generateRoomId = () => {
 
 function getAllClients(roomId) {
   const socketIds = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
+  const hostId = roomHosts[roomId];
   return socketIds.map((socketId) => {
     return {
       socketId,
       username: userSocketMap[socketId],
+      isHost: socketId == hostId,
     };
   });
 }
@@ -148,6 +151,11 @@ io.on("connection", (socket) => {
     userSocketMap[socket.id] = username;
     roomSocketMap[socket.id] = roomId;
     socket.join(roomId);
+
+    if(!roomHosts[roomId]) {
+      roomHosts[roomId] = socket.id;
+      console.log(`${username} (${socket.id}) is set as host for room ${roomId}`);
+    }
 
     // Initialize room file system if it doesn't exist
     initializeRoomFileSystem(roomId);
@@ -425,14 +433,23 @@ Do not repeat code that is already in the suffix (the 'code after' part).`,
         username,
       });
 
+      let wasHost = socket.id === roomHosts[roomId];
+
       // Clean up room file system if no one is left
       const remainingClients = getAllClients(roomId).filter(
         (client) => client.socketId !== socket.id
       );
-      if (remainingClients.length === 0) {
+      if(wasHost && remainingClients.length > 0) {
+        const newHostId = remainingClients[0].socketId;
+        roomHosts[roomId] = newHostId;
+        console.log(`Host ${username} (${socket.id}) disconnected. New host is (${newHostId}) for room ${roomId}`);
+        io.in(roomId).emit("host-changed", { newHostId });
+      }
+      else if (remainingClients.length === 0) {
+        delete roomHosts[roomId];
         delete roomFileSystems[roomId];
         console.log(
-          `Room ${roomId} file system cleaned up - no users remaining`
+          `Room ${roomId} empty, clean up started`
         );
       }
 
