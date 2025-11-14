@@ -11,9 +11,62 @@ const languageConfig = {
     command: (filename) => ["node", filename],
     extension: ".js",
   },
+  sqlite: {
+    image: "alpine:latest",
+    command: (filename) => [
+      "sh",
+      "-c",
+      `apk add --no-cache sqlite && sqlite3 mydatabase.db < init.sql && sqlite3 -json mydatabase.db < ${filename} || sqlite3 -header -column mydatabase.db < ${filename}`,
+    ],
+
+    extension: ".sql",
+    // This initFile content will be written to init.sql
+    initFile: `
+      DROP TABLE IF EXISTS Customers;
+      CREATE TABLE Customers (
+        customer_id INT PRIMARY KEY, 
+        first_name VARCHAR(100), 
+        last_name VARCHAR(100), 
+        age INT, 
+        country VARCHAR(100)
+      );
+      INSERT INTO Customers (customer_id, first_name, last_name, age, country) VALUES 
+      (1, 'John', 'Doe', 31, 'USA'), 
+      (2, 'Robert', 'Luna', 22, 'USA'), 
+      (3, 'David', 'Robinson', 22, 'UK'), 
+      (4, 'John', 'Reinhardt', 25, 'UK'), 
+      (5, 'Betty', 'Doe', 28, 'USA');
+      
+      DROP TABLE IF EXISTS Orders;
+      CREATE TABLE Orders (
+        order_id INT PRIMARY KEY, 
+        item VARCHAR(100), 
+        amount INT, 
+        customer_id INT,
+        FOREIGN KEY(customer_id) REFERENCES Customers(customer_id)
+      );
+      INSERT INTO Orders (order_id, item, amount, customer_id) VALUES 
+      (1, 'Keyboard', 100, 1), 
+      (2, 'Mouse', 150, 1), 
+      (3, 'Monitor', 80, 2), 
+      (4, 'Keyboard', 100, 3);
+      
+      DROP TABLE IF EXISTS Shippings;
+      CREATE TABLE Shippings (
+        shipping_id INT PRIMARY KEY, 
+        status VARCHAR(100), 
+        customer_id INT,
+        FOREIGN KEY(customer_id) REFERENCES Customers(customer_id)
+      );
+      INSERT INTO Shippings (shipping_id, status, customer_id) VALUES 
+      (1, 'Pending', 1),
+      (2, 'Delivered', 2),
+      (3, 'Delivered', 3);
+    `,
+  },
   python: {
     image: "python:3.9-slim",
-    command: (filename) => ["python", filename],
+    command: (filename) => ["python", "-u", filename],
     extension: ".py",
   },
   java: {
@@ -82,8 +135,9 @@ const languageConfig = {
 
 const runCodeInContainer = async (language, code) => {
   console.log(`Executing ${language} code:`, code.substring(0, 100) + "...");
+  const effectiveLanguage = language === "sql" ? "sqlite" : language;
 
-  const config = languageConfig[language];
+  const config = languageConfig[effectiveLanguage];
   if (!config) {
     throw new Error(`Language '${language}' is not supported.`);
   }
@@ -107,6 +161,11 @@ const runCodeInContainer = async (language, code) => {
   try {
     fs.writeFileSync(filepath, code);
     console.log(`Code written to: ${filepath}`);
+    if (config.initFile) {
+      const initFilePath = path.join(tempDir, "init.sql");
+      fs.writeFileSync(initFilePath, config.initFile);
+      console.log(`Init script written to: ${initFilePath}`);
+    }
   } catch (err) {
     console.error("Failed to write code file:", err);
     throw new Error("Failed to write code file");
@@ -132,6 +191,8 @@ const runCodeInContainer = async (language, code) => {
       Tty: false,
       AttachStdout: true,
       AttachStderr: true,
+      OpenStdin: false,
+      StdinOnce: false,
     });
 
     console.log("Starting container...");
@@ -152,20 +213,40 @@ const runCodeInContainer = async (language, code) => {
     const result = await Promise.race([executionPromise, timeoutPromise]);
 
     console.log("Getting logs...");
-    const logs = await container.logs({ stdout: true, stderr: true });
+    const stdoutStream = await container.logs({
+      stdout: true,
+      stderr: false,
+      follow: false,
+      timestamps: false,
+    });
 
-    // The logs can contain non-printable characters, so we clean them up
-    const logString = logs.toString("utf8").replace(/[^\x20-\x7E\n\t]/g, ""); // This strips all non-printable ASCII chars
+    const stderrStream = await container.logs({
+      stdout: false,
+      stderr: true,
+      follow: false,
+      timestamps: false,
+    });
+
+    const stdout = stdoutStream
+      .toString("utf8")
+      .replace(/[\x00-\x09\x0B-\x0C\x0E-\x1F\x7F]/g, "");
+    const stderr = stderrStream
+      .toString("utf8")
+      .replace(/[\x00-\x09\x0B-\x0C\x0E-\x1F\x7F]/g, "");
+
     console.log(`Execution completed with status: ${result.StatusCode}`);
-    console.log("Raw output:", logString);
+    console.log("STDOUT:", stdout);
+    console.log("STDERR:", stderr);
 
     if (result.StatusCode !== 0) {
+      // If there's an error, combine stdout and stderr for context
+      const errorOutput = (stdout + "\n" + stderr).trim();
       throw new Error(
-        `Execution failed with exit code ${result.StatusCode}.\n${logString}`
+        `Execution failed with exit code ${result.StatusCode}.\n${errorOutput}`
       );
     }
 
-    return logString || "(No output)";
+    return stdout.trim() || "(No output)";
   } catch (error) {
     console.error("Error during container execution:", error);
 

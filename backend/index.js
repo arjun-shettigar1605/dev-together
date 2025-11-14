@@ -71,78 +71,102 @@ function getAllClients(roomId) {
 }
 
 // create a nested file system for web development
-function initializeRoomFileSystem(roomId) {
-  if (!roomFileSystems[roomId]) {
-    const rootId = uuidv4();
-    const htmlId = uuidv4();
-    const cssId = uuidv4();
-    const jsId = uuidv4();
-    const pyId = uuidv4();
+const createDefaultFiles = () => {
+  const progRootId = uuidv4();
+  const devRootId = uuidv4();
+  const dbRootId = uuidv4();
 
-    roomFileSystems[roomId] = {
-      [rootId]: {
-        id: rootId,
-        name: "root",
-        type: "folder",
-        parentId: null,
-        children: [htmlId, cssId, jsId, pyId],
-      },
-      [htmlId]: {
-        id: htmlId,
-        name: "index.html",
-        type: "file",
-        language: "html",
-        content: `<h1>Hello, CollabCode!</h1>
-<p>Your HTML, CSS, and JavaScript are all linked up.</p>
-<div class="content">
-</div>
-`,
-        parentId: rootId,
-      },
-      [cssId]: {
-        id: cssId,
-        name: "style.css",
-        type: "file",
-        language: "css",
-        content: `body {
-  font-family: sans-serif;
-  background-color: #f4f4f4;
-  color: #333;
-}
-.content {
-  padding: 20px;
-  background-color: #fff;
-  border-radius: 8px;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-}`,
-        parentId: rootId,
-      },
-      [jsId]: {
-        id: jsId,
-        name: "script.js",
-        type: "file",
-        language: "javascript",
-        content: `console.log("Welcome to the live preview!");
-// Your JavaScript code goes here
-`,
-        parentId: rootId,
-      },
-      [pyId]: {
-        id: pyId,
-        name: "main.py",
-        type: "file",
-        language: "python",
-        content: `def main():
-    print("Hello from Python!")
+  const progFileId = uuidv4();
+  const devFileId1 = uuidv4();
+  const devFileId2 = uuidv4();
+  const devFileId3 = uuidv4();
+  const dbFileId = uuidv4();
 
-if __name__ == "__main__":
-    main()
-`,
-        parentId: rootId,
+  return {
+    programming: {
+      files: {
+        [progRootId]: {
+          id: progRootId,
+          name: "Programming",
+          type: "folder",
+          parentId: null,
+          children: [progFileId],
+        },
+        [progFileId]: {
+          id: progFileId,
+          name: "main.py",
+          type: "file",
+          language: "python",
+          content: "# Welcome to Python!\nprint('Hello, Python!')",
+          parentId: progRootId,
+        },
       },
-    };
-  }
-}
+      rootId: progRootId,
+      defaultFileId: progFileId,
+    },
+    development: {
+      files: {
+        [devRootId]: {
+          id: devRootId,
+          name: "Development",
+          type: "folder",
+          parentId: null,
+          children: [devFileId1, devFileId2, devFileId3],
+        },
+        [devFileId1]: {
+          id: devFileId1,
+          name: "index.html",
+          type: "file",
+          language: "html",
+          content:
+            '\n<h1>Hello, World!</h1>\n<script src="script.js"></script>',
+          parentId: devRootId,
+        },
+        [devFileId2]: {
+          id: devFileId2,
+          name: "style.css",
+          type: "file",
+          language: "css",
+          content: "/* CSS styles */\nh1 {\n  color: blue;\n}",
+          parentId: devRootId,
+        },
+        [devFileId3]: {
+          id: devFileId3,
+          name: "script.js",
+          type: "file",
+          language: "javascript",
+          content: "// JavaScript code\nconsole.log('Hello from script.js!');",
+          parentId: devRootId,
+        },
+      },
+      rootId: devRootId,
+      defaultFileId: devFileId1,
+    },
+    database: {
+      files: {
+        [dbRootId]: {
+          id: dbRootId,
+          name: "Database",
+          type: "folder",
+          parentId: null,
+          children: [dbFileId],
+        },
+        [dbFileId]: {
+          id: dbFileId,
+          name: "main.sql",
+          type: "file",
+          language: "sql",
+          content:
+            "-- SQL queries\nSELECT * FROM Customers;\n\nSELECT * FROM Products;",
+          parentId: dbRootId,
+        },
+      },
+      rootId: dbRootId,
+      defaultFileId: dbFileId,
+    },
+  };
+};
+
 
 io.on("connection", (socket) => {
   console.log("A user connected, socket id:", socket.id);
@@ -152,13 +176,17 @@ io.on("connection", (socket) => {
     roomSocketMap[socket.id] = roomId;
     socket.join(roomId);
 
+    if (!roomFileSystems[roomId]) {
+      roomFileSystems[roomId] = createDefaultFiles();
+    }
+
     if(!roomHosts[roomId]) {
       roomHosts[roomId] = socket.id;
       console.log(`${username} (${socket.id}) is set as host for room ${roomId}`);
     }
 
     // Initialize room file system if it doesn't exist
-    initializeRoomFileSystem(roomId);
+    // initializeRoomFileSystem(roomId);
 
     const clients = getAllClients(roomId);
 
@@ -199,51 +227,90 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     console.log(`Preview window joined room ${roomId}`);
     // Send initial content
-    if (roomFileSystems[roomId]) {
-      socket.emit("live-preview-update", { files: roomFileSystems[roomId] });
+    if (roomFileSystems[roomId] && roomFileSystems[roomId].development) {
+      socket.emit("live-preview-update", { 
+        files: roomFileSystems[roomId].development.files, 
+      });
     }
   });
 
   // Handle code changes and update server state
-  socket.on("code-change", ({ roomId, fileId, code }) => {
-    if (roomFileSystems[roomId] && roomFileSystems[roomId][fileId]) {
-      roomFileSystems[roomId][fileId].content = code;
+  socket.on("code-change", ({ roomId, fileId, code, section }) => {
+    if (
+      roomFileSystems[roomId] &&
+      roomFileSystems[roomId][section] &&
+      roomFileSystems[roomId][section].files[fileId]
+    ) {
+      roomFileSystems[roomId][section].files[fileId].content = code;
 
       // Broadcast to other editors
-      socket.to(roomId).emit("code-change", { fileId, code });
+      socket.to(roomId).emit("code-change", { fileId, code, section });
 
-      // NEW: Check if it's a web file and broadcast to preview windows
-      const file = roomFileSystems[roomId][fileId];
-      if (
-        file.name.endsWith(".html") ||
-        file.name.endsWith(".css") ||
-        file.name.endsWith(".js")
-      ) {
+      if (section === "development") {
         io.in(roomId).emit("live-preview-update", {
-          files: roomFileSystems[roomId],
+          files: roomFileSystems[roomId].development.files,
         });
       }
+
+      // // NEW: Check if it's a web file and broadcast to preview windows
+      // const file = roomFileSystems[roomId][fileId];
+      // if (
+      //   file.name.endsWith(".html") ||
+      //   file.name.endsWith(".css") ||
+      //   file.name.endsWith(".js")
+      // ) {
+      //   io.in(roomId).emit("live-preview-update", {
+      //     files: roomFileSystems[roomId],
+      //   });
+      // }
     }
   });
 
   // Handle file creation and update server state
-  socket.on("file-create", ({ roomId, name, type, parentId }) => {
-    if (roomFileSystems[roomId] && roomFileSystems[roomId][parentId]) {
-      const language = getLanguageFromExtension(name);
+  socket.on("file-create", ({ roomId, name, type, section, parentId, language }) => {
+    if (!roomFileSystems[roomId] || !roomFileSystems[roomId][section]) return;
+
+    const fs = roomFileSystems[roomId][section].files;
+
+    // if (roomFileSystems[roomId] && roomFileSystems[roomId][parentId]) {
+    //   const language = getLanguageFromExtension(name);
+    //   const newItem = {
+    //     id: uuidv4(),
+    //     name,
+    //     type,
+    //     parentId,
+    //     language: type === "file" ? language : null,
+    //     content: type === "file" ? `// New file: ${name}\n` : null,
+    //     children: type === "folder" ? [] : null,
+    //   };
+
+    //   // Add new item to map
+    //   roomFileSystems[roomId][newItem.id] = newItem;
+    //   // Add new item to parent's children array
+    //   roomFileSystems[roomId][parentId].children.push(newItem.id);
+
+    //   // Broadcast the full filesystem update
+    //   io.in(roomId).emit("filesystem-updated", {
+    //     files: roomFileSystems[roomId],
+    //   });
+    // }
+
+    if (fs && fs[parentId]) {
+      const lang = type === "file" ? getLanguageFromExtension(name) : null; // Use language from name
       const newItem = {
         id: uuidv4(),
         name,
         type,
         parentId,
-        language: type === "file" ? language : null,
+        language: lang,
         content: type === "file" ? `// New file: ${name}\n` : null,
         children: type === "folder" ? [] : null,
       };
 
       // Add new item to map
-      roomFileSystems[roomId][newItem.id] = newItem;
+      fs[newItem.id] = newItem;
       // Add new item to parent's children array
-      roomFileSystems[roomId][parentId].children.push(newItem.id);
+      fs[parentId].children.push(newItem.id);
 
       // Broadcast the full filesystem update
       io.in(roomId).emit("filesystem-updated", {
@@ -253,27 +320,61 @@ io.on("connection", (socket) => {
   });
 
   // Handle file deletion and update server state
-  socket.on("file-delete", ({ roomId, itemId }) => {
-    if (roomFileSystems[roomId] && roomFileSystems[roomId][itemId]) {
-      const itemToDelete = roomFileSystems[roomId][itemId];
+  socket.on("file-delete", ({ roomId, itemId, section }) => {
+    if (!roomFileSystems[roomId] || !roomFileSystems[roomId][section]) return;
+
+    // if (roomFileSystems[roomId] && roomFileSystems[roomId][itemId]) {
+    //   const itemToDelete = roomFileSystems[roomId][itemId];
+    //   const parentId = itemToDelete.parentId;
+
+    //   // Recursive delete function
+    //   const deleteRecursive = (id) => {
+    //     const item = roomFileSystems[roomId][id];
+    //     if (item.type === "folder") {
+    //       item.children.forEach(deleteRecursive);
+    //     }
+    //     delete roomFileSystems[roomId][id];
+    //   };
+
+    //   deleteRecursive(itemId);
+
+    //   // Remove from parent's children
+    //   if (parentId && roomFileSystems[roomId][parentId]) {
+    //     roomFileSystems[roomId][parentId].children = roomFileSystems[roomId][
+    //       parentId
+    //     ].children.filter((id) => id !== itemId);
+    //   }
+
+    //   // Broadcast the full filesystem update
+    //   io.in(roomId).emit("filesystem-updated", {
+    //     files: roomFileSystems[roomId],
+    //   });
+    // }
+
+    const fs = roomFileSystems[roomId][section].files; // Get section-specific filesystem
+
+    if (fs && fs[itemId]) {
+      const itemToDelete = fs[itemId];
       const parentId = itemToDelete.parentId;
 
       // Recursive delete function
       const deleteRecursive = (id) => {
-        const item = roomFileSystems[roomId][id];
+        const item = fs[id];
+        if (!item) return; // Item already deleted
         if (item.type === "folder") {
-          item.children.forEach(deleteRecursive);
+          // Create a copy of children array before iterating
+          [...item.children].forEach(deleteRecursive);
         }
-        delete roomFileSystems[roomId][id];
+        delete fs[id];
       };
 
       deleteRecursive(itemId);
 
       // Remove from parent's children
-      if (parentId && roomFileSystems[roomId][parentId]) {
-        roomFileSystems[roomId][parentId].children = roomFileSystems[roomId][
-          parentId
-        ].children.filter((id) => id !== itemId);
+      if (parentId && fs[parentId]) {
+        fs[parentId].children = fs[parentId].children.filter(
+          (id) => id !== itemId
+        );
       }
 
       // Broadcast the full filesystem update
@@ -284,8 +385,9 @@ io.on("connection", (socket) => {
   });
 
   // NEW: Handle file drag-and-drop
-  socket.on("file-move", ({ roomId, itemId, newParentId }) => {
-    const fs = roomFileSystems[roomId];
+  socket.on("file-move", ({ roomId, itemId, newParentId, section }) => {
+    if (!roomFileSystems[roomId] || !roomFileSystems[roomId][section]) return;
+    const fs = roomFileSystems[roomId][section].files;
     if (
       !fs ||
       !fs[itemId] ||
@@ -527,6 +629,8 @@ const getLanguageFromExtension = (filename) => {
   switch (extension) {
     case "js":
       return "javascript";
+    case "sql":
+      return "sqlite"
     case "py":
       return "python";
     case "java":

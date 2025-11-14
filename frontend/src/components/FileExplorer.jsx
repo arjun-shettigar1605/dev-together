@@ -12,6 +12,7 @@ import {
   FaFileAlt,
   FaJava,
   FaFileInvoice,
+  FaDatabase
 } from "react-icons/fa";
 import { LuFilePlus2 } from "react-icons/lu";
 import { TbFolderPlus } from "react-icons/tb";
@@ -87,6 +88,11 @@ const getFileIcon = (fileName) => {
     return (
       (SiIcons.SiTypescript && <SiIcons.SiTypescript className="text-blue-500" />) ||
       <FaFileCode />
+    );
+  if (extension === "sql")
+    return (
+      (SiIcons.SiSqlite && <SiIcons.SiSqlite className="text-cyan-600" />) || 
+      <FaDatabase />
     );
   if (extension === "txt") return <FaFileAlt className="text-gray-300" />;
 
@@ -253,6 +259,7 @@ const FileExplorer = ({
   onCreateItem,
   onDeleteItem,
   onMoveItem,
+  activeSection,
 }) => {
   const [showInput, setShowInput] = useState(null); // { type }
   const [inputValue, setInputValue] = useState("");
@@ -282,8 +289,37 @@ const FileExplorer = ({
     setInputValue("");
   };
 
+  const allowedExtensions = {
+    programming: [
+      "js",
+      "py",
+      "java",
+      "cpp",
+      "c",
+      "rb",
+      "dart",
+      "go",
+      "php",
+      "rs",
+      "swift",
+      "ts",
+    ],
+    development: ["html", "css", "js"],
+    database: ["sql"],
+  };
+
   const handleCreate = (e) => {
     if (e.key === "Enter" && inputValue.trim()) {
+
+      if(showInput.type === "file") {
+        const extension = inputValue.split('.').pop();
+        const allowed = allowedExtensions[activeSection];
+        if (!extension || !allowed.includes(extension)) {
+          toast.error(`Invalid file type for ${activeSection} section. Allowed: ${allowed.join(', ')}`);
+          return;
+        }
+      }
+      
       let parentId;
       if (selectedItemId && files[selectedItemId]?.type === "folder") {
         parentId = selectedItemId; // Create in selected folder
@@ -293,7 +329,7 @@ const FileExplorer = ({
         parentId = rootNode.id; // Create in root
       }
 
-      onCreateItem(inputValue, showInput.type, parentId);
+      onCreateItem(inputValue, showInput.type, parentId, activeSection);
       setShowInput(null);
       setInputValue("");
     }

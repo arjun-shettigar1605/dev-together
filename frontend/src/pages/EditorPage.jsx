@@ -11,12 +11,12 @@ import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "../contexts/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
 import FileExplorer from "../components/FileExplorer";
+import DatabaseSchemaExplorer from "../components/DatabaseSchemaExplorer";
+import DatabaseFileViewer from "../components/DatabaseFileViewer";
+import SqlOutputTable from "../components/SqlOutputTable";
+import LivePreviewPanel from "../components/LivePreviewPanel";
 
-import {
-  Panel,
-  PanelGroup,
-  PanelResizeHandle,
-}from "react-resizable-panels"; 
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import {
   FaMicrophone,
@@ -26,6 +26,10 @@ import {
   FaLightbulb,
   FaBroadcastTower,
   FaCrown,
+  FaWindowMaximize,
+  FaCode,
+  FaDatabase,
+  FaExpand,
 } from "react-icons/fa";
 
 const getLanguageFromExtension = (filename) => {
@@ -34,6 +38,8 @@ const getLanguageFromExtension = (filename) => {
   switch (extension) {
     case "js":
       return "javascript";
+    case "sql":
+      return "sql";
     case "py":
       return "python";
     case "java":
@@ -77,9 +83,15 @@ const EditorPage = () => {
   const previewWindowRef = useRef(null);
 
   const [clients, setClients] = useState([]);
-  const [files, setFiles] = useState({});
+  const [programmingFiles, setProgrammingFiles] = useState({});
+  const [developmentFiles, setDevelopmentFiles] = useState({});
+  const [databaseFiles, setDatabaseFiles] = useState({});
+
+  const [activeProgrammingFileId, setActiveProgrammingFileId] = useState(null);
+  const [activeDevelopmentFileId, setActiveDevelopmentFileId] = useState(null);
+  const [activeDatabaseFileId, setActiveDatabaseFileId] = useState(null);
+
   const [showFileInput, setShowFileInput] = useState(false);
-  const [activeFileId, setActiveFileId] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isAiEnabled, setIsAiEnabled] = useState(false);
   const isAiEnabledRef = useRef(isAiEnabled);
@@ -88,7 +100,9 @@ const EditorPage = () => {
   const editorRef = useRef(null);
   const [isMonacoReady, setIsMonacoReady] = useState(false);
   const providerDisposableRef = useRef(null);
+  const [viewMode, setViewMode] = useState("code"); // 'code' or 'preview'
 
+  const [activeSection, setActiveSection] = useState("programming"); // 'programming' or 'database' or 'development'
   const [output, setOutput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -97,8 +111,47 @@ const EditorPage = () => {
   const [audioStatus, setAudioStatus] = useState({});
   const peersRef = useRef({});
   const audioRef = useRef(null);
-  
+
   const [showMicPrompt, setShowMicPrompt] = useState(true);
+
+  const stateAccessors = {
+    programming: {
+      files: programmingFiles,
+      setFiles: setProgrammingFiles,
+      activeFileId: activeProgrammingFileId,
+      setActiveFileId: setActiveProgrammingFileId,
+    },
+    development: {
+      files: developmentFiles,
+      setFiles: setDevelopmentFiles,
+      activeFileId: activeDevelopmentFileId,
+      setActiveFileId: setActiveDevelopmentFileId,
+    },
+    database: {
+      files: databaseFiles,
+      setFiles: setDatabaseFiles,
+      activeFileId: activeDatabaseFileId,
+      setActiveFileId: setActiveDatabaseFileId,
+    },
+  };
+
+  const allFilesRef = useRef({});
+  useEffect(() => {
+    allFilesRef.current = {
+      ...programmingFiles,
+      ...developmentFiles,
+      ...databaseFiles,
+    };
+  }, [programmingFiles, developmentFiles, databaseFiles]);
+
+  // const getCurrentFiles = () => stateAccessors[activeSection].files;
+  // const getCurrentActiveFileId = () =>
+  //   stateAccessors[activeSection].activeFileId;
+  // const getCurrentFileContent = () => {
+  //   const files = getCurrentFiles();
+  //   const activeFileId = getCurrentActiveFileId();
+  //   return files[activeFileId]?.content || "";
+  // };
 
   useEffect(() => {
     const initializeAudio = async () => {
@@ -138,10 +191,9 @@ const EditorPage = () => {
     initializeAudio();
   }, []);
 
-
-  useEffect(() => {
-    filesRef.current = files;
-  }, [files]);
+  // useEffect(() => {
+  //   filesRef.current = files;
+  // }, [files]);
 
   // enables audio on demand
   const enableAudio = async () => {
@@ -175,7 +227,6 @@ const EditorPage = () => {
     toast.success("Microphone enabled!");
   };
 
-
   useEffect(() => {
     const init = async () => {
       socketRef.current = io("http://localhost:5001");
@@ -196,36 +247,48 @@ const EditorPage = () => {
     };
 
     const setupSocketListeners = () => {
-
       // Set initial mute state for self (true = muted)
       socketRef.current.on("connect", () => {
         setAudioStatus((prev) => ({ ...prev, [socketRef.current.id]: true }));
       });
 
       socketRef.current.on("filesystem-updated", ({ files: receivedFiles }) => {
-        setFiles(receivedFiles);
+        if (receivedFiles.programming) {
+          setProgrammingFiles(receivedFiles.programming.files);
+        }
+        if (receivedFiles.development) {
+          setDevelopmentFiles(receivedFiles.development.files);
+        }
+        if (receivedFiles.database) {
+          setDatabaseFiles(receivedFiles.database.files);
+        }
         if (!isInitialized) {
-          // Find the first file to open
-          const firstFile = Object.values(receivedFiles).find(
-            (f) => f.type === "file"
-          );
-          if (firstFile) {
-            setActiveFileId(firstFile.id);
+          if (receivedFiles.programming) {
+            setActiveProgrammingFileId(receivedFiles.programming.defaultFileId);
+          }
+          if (receivedFiles.development) {
+            setActiveDevelopmentFileId(receivedFiles.development.defaultFileId);
+          }
+          if (receivedFiles.database) {
+            setActiveDatabaseFileId(receivedFiles.database.defaultFileId);
           }
           setIsInitialized(true);
         }
       });
 
-      socketRef.current.on("code-change", ({ fileId, code }) => {
-        setFiles((prev) => {
-          if (prev[fileId]) {
-            return {
-              ...prev,
-              [fileId]: { ...prev[fileId], content: code },
-            };
-          }
-          return prev;
-        });
+      socketRef.current.on("code-change", ({ fileId, code, section }) => {
+        const { setFiles } = stateAccessors[section];
+        if (setFiles) {
+          setFiles((prev) => {
+            if (prev[fileId]) {
+              return {
+                ...prev,
+                [fileId]: { ...prev[fileId], content: code },
+              };
+            }
+            return prev;
+          });
+        }
       });
 
       socketRef.current.on("suggestion-result", ({ suggestion, requestId }) => {
@@ -253,8 +316,6 @@ const EditorPage = () => {
 
       // Only update clients list, don't handle WebRTC here
       socketRef.current.on("user-joined", ({ clients, username, socketId }) => {
-        
-
         console.log("Received clients list:", clients);
 
         if (username && socketId !== socketRef.current.id) {
@@ -266,7 +327,6 @@ const EditorPage = () => {
 
       // Handle server instruction to initiate peer connection
       socketRef.current.on("initiate-peer", ({ socketId }) => {
-
         if (!socketId || socketRef.current.id === socketId) {
           return;
         }
@@ -323,7 +383,6 @@ const EditorPage = () => {
 
       // Handle incoming offer from initiator
       socketRef.current.on("user-joined-signal", ({ signal, callerID }) => {
-
         if (!callerID) {
           console.error("❌ callerID is undefined");
           return;
@@ -371,7 +430,7 @@ const EditorPage = () => {
 
         if (peersRef.current[socketId]) {
           try {
-            peersRef.current[socketId].destroy(); 
+            peersRef.current[socketId].destroy();
           } catch (err) {
             console.error("❌ Error destroying peer:", err);
           }
@@ -397,7 +456,6 @@ const EditorPage = () => {
     init();
 
     return () => {
-
       // Stop local stream
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
@@ -469,7 +527,8 @@ const EditorPage = () => {
                 pendingRequests.set(requestId, { resolve, position });
 
                 const fullCode = model.getValue();
-                const file = Object.values(filesRef.current).find(
+
+                const file = Object.values(allFilesRef.current).find(
                   (f) => f.id === model.uri.path.substring(1)
                 );
                 const language = file
@@ -526,11 +585,17 @@ const EditorPage = () => {
 
   const handleMoveItem = (itemId, newParentId) => {
     // Basic validation to prevent dragging into thin air if state is weird
+    const { files } = stateAccessors[activeSection];
     if (!files[newParentId] || files[newParentId].type !== "folder") {
       toast.error("Invalid drop target.");
       return;
     }
-    socketRef.current.emit("file-move", { roomId, itemId, newParentId });
+    socketRef.current.emit("file-move", {
+      roomId,
+      itemId,
+      newParentId,
+      section: activeSection,
+    });
   };
 
   const handleEditorDidMount = (editor, monaco) => {
@@ -542,6 +607,7 @@ const EditorPage = () => {
   };
 
   const handleCreateItem = (name, type, parentId) => {
+    const { files } = stateAccessors[activeSection];
     // Basic validation
     if (
       Object.values(files).some(
@@ -551,17 +617,29 @@ const EditorPage = () => {
       toast.error("A file or folder with this name already exists here.");
       return;
     }
-    socketRef.current.emit("file-create", { roomId, name, type, parentId });
+    socketRef.current.emit("file-create", {
+      roomId,
+      name,
+      type,
+      parentId,
+      section: activeSection,
+    }); // Send section
   };
 
   const handleDeleteItem = (itemId) => {
-    socketRef.current.emit("file-delete", { roomId, itemId });
+    const { activeFileId, setActiveFileId } = stateAccessors[activeSection];
+    socketRef.current.emit("file-delete", {
+      roomId,
+      itemId,
+      section: activeSection,
+    }); // Send section
     if (activeFileId === itemId) {
       setActiveFileId(null);
     }
   };
 
   const handleCodeChange = (newCode) => {
+    const { files, activeFileId, setFiles } = stateAccessors[activeSection];
     if (activeFileId && files[activeFileId]) {
       // Optimistic local update
       setFiles((prevFiles) => ({
@@ -573,11 +651,13 @@ const EditorPage = () => {
         roomId,
         fileId: activeFileId,
         code: newCode,
+        section: activeSection,
       });
     }
   };
 
   const handleRunCode = async () => {
+    const { files, activeFileId } = stateAccessors[activeSection];
     const currentFile = files[activeFileId];
     if (!currentFile) return;
 
@@ -599,7 +679,7 @@ const EditorPage = () => {
     }
   };
 
-  const handleLivePreview = () => {
+  const handleFullscreenPreview = () => {
     const previewUrl = `/preview/${roomId}`;
     if (!previewWindowRef.current || previewWindowRef.current.closed) {
       previewWindowRef.current = window.open(
@@ -613,9 +693,8 @@ const EditorPage = () => {
   };
 
   function attachAudioStream(socketId, remoteStream) {
-
     const tracks = remoteStream.getAudioTracks();
-    
+
     if (tracks.length === 0) {
       console.error("❌ No audio tracks in remote stream!");
       return;
@@ -653,14 +732,12 @@ const EditorPage = () => {
 
     // Add comprehensive event listeners
     audio.onloadedmetadata = () => {
-
       // CRITICAL FIX: Explicitly play with error handling
       const playPromise = audio.play();
 
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
-
             // Verify stream tracks are active
             const streamTracks = audio.srcObject.getAudioTracks();
           })
@@ -833,7 +910,6 @@ const EditorPage = () => {
     return peer;
   }
 
-
   const handleMuteToggle = (targetSocketId) => {
     const myId = socketRef.current?.id;
     if (!myId) return;
@@ -860,7 +936,6 @@ const EditorPage = () => {
       }
     }
   };
-
 
   const leaveRoom = () => {
     if (localStreamRef.current) {
@@ -890,7 +965,23 @@ const EditorPage = () => {
     return null;
   }
 
+  const { files, activeFileId } = stateAccessors[activeSection];
   const currentFile = files[activeFileId];
+
+  const SectionTab = ({ icon: Icon, label, isActive, onClick }) => (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium rounded-md transition-colors ${
+        isActive
+          ? "bg-orange-100 text-orange-600 dark:bg-orange-900/50 dark:text-orange-300"
+          : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+      }`}
+      title={label}
+    >
+      <Icon className="text-lg" />
+      <span>{label}</span>
+    </button>
+  );
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white font-sans">
@@ -928,14 +1019,6 @@ const EditorPage = () => {
 
         <div className="flex items-center gap-3 flex-shrink-0">
           <button
-            onClick={handleLivePreview}
-            className="flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors bg-purple-600 hover:bg-purple-700 text-white"
-            title="Open Live Preview"
-          >
-            <FaBroadcastTower className="text-sm" />
-            <span className="text-xs">Preview</span>
-          </button>
-          <button
             onClick={() => setIsAiEnabled(!isAiEnabled)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-colors ${
               isAiEnabled
@@ -948,14 +1031,17 @@ const EditorPage = () => {
             <span className="text-xs">AI</span>
           </button>
 
-          <button
-            onClick={handleRunCode}
-            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-1.5 rounded text-sm text-white transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
-            disabled={isLoading || !activeFileId}
-          >
-            <FaPlay className="text-xs" />
-            <span>{isLoading ? "Running..." : "Run"}</span>
-          </button>
+          {(activeSection === "database" ||
+            activeSection === "programming") && (
+            <button
+              onClick={handleRunCode}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-1.5 rounded text-sm text-white transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+              disabled={isLoading || !activeFileId}
+            >
+              <FaPlay className="text-xs" />
+              <span>{isLoading ? "Running..." : "Run"}</span>
+            </button>
+          )}
           <ThemeToggle />
 
           <button
@@ -978,14 +1064,55 @@ const EditorPage = () => {
           maxSize={30}
           className="min-w-[200px] max-w-[500px] bg-gray-50 dark:bg-[#252526] border-r border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
         >
-          <FileExplorer
-            files={files}
-            activeFileId={activeFileId}
-            onSelectFile={setActiveFileId}
-            onCreateItem={handleCreateItem}
-            onDeleteItem={handleDeleteItem}
-            onMoveItem={handleMoveItem}
-          />
+          <div className="p-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+            <div className="flex items-center justify-center gap-1.5 p-1 bg-gray-100 dark:bg-gray-900/50 rounded-lg">
+              <SectionTab
+                icon={FaCode}
+                label="Programming"
+                isActive={activeSection === "programming"}
+                onClick={() => setActiveSection("programming")}
+              />
+              <SectionTab
+                icon={FaWindowMaximize}
+                label="Development"
+                isActive={activeSection === "development"}
+                onClick={() => setActiveSection("development")}
+              />
+              <SectionTab
+                icon={FaDatabase}
+                label="Database"
+                isActive={activeSection === "database"}
+                onClick={() => setActiveSection("database")}
+              />
+            </div>
+          </div>
+
+          {(activeSection === "programming" ||
+            activeSection === "development") && (
+            <FileExplorer
+              files={files}
+              activeFileId={activeFileId}
+              onSelectFile={stateAccessors[activeSection].setActiveFileId}
+              onCreateItem={handleCreateItem}
+              onDeleteItem={handleDeleteItem}
+              onMoveItem={handleMoveItem}
+              activeSection={activeSection}
+            />
+          )}
+          {activeSection === "database" && (
+            <>
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <DatabaseFileViewer
+                  files={files}
+                  activeFileId={activeFileId}
+                  onSelectFile={stateAccessors[activeSection].setActiveFileId} // CRITICAL FIX
+                />
+              </div>
+              <div className="border-t border-gray-200 dark:border-[#1e1e1e] flex-shrink-0 max-h-[40vh] overflow-hidden">
+                <DatabaseSchemaExplorer />
+              </div>
+            </>
+          )}
         </Panel>
 
         {/* Left Resize Handle */}
@@ -997,99 +1124,208 @@ const EditorPage = () => {
           minSize={30}
           className="flex-1 flex flex-col min-w-0"
         >
-          {/* 3. Wrap Editor and Output in a *vertical* PanelGroup */}
-          <PanelGroup direction="vertical">
-            {/* Editor Panel */}
-            <Panel
-              defaultSize={70}
-              minSize={30}
-              className="flex flex-col min-h-0"
-            >
-              {/* Tab Bar */}
-              {activeFileId && currentFile && (
-                <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
-                  <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
-                    {currentFile?.name}
-                  </div>
+          {/* === CONDITIONAL RENDERING START === */}
+          {activeSection === "development" ? (
+            /* --- DEVELOPMENT VIEW (No Output Panel) --- */
+            <div className="flex flex-col h-full">
+              {/* 1. New Tab Bar (Code/Preview/Fullscreen) */}
+              <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center justify-between px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+                {/* Left side: Code/Preview Toggles */}
+                <div className="flex items-center">
+                  <button
+                    onClick={() => setViewMode("code")}
+                    className={`flex items-center gap-1.5 px-3 py-1 text-xs rounded-t ${
+                      viewMode === "code"
+                        ? "bg-white dark:bg-[#1e1e1e] text-gray-800 dark:text-gray-300"
+                        : "text-gray-500 hover:text-gray-800 dark:hover:text-white"
+                    }`}
+                  >
+                    <FaCode />
+                    <span>Code</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode("preview")}
+                    className={`flex items-center gap-1.5 px-3 py-1 text-xs rounded-t ${
+                      viewMode === "preview"
+                        ? "bg-white dark:bg-[#1e1e1e] text-gray-800 dark:text-gray-300"
+                        : "text-gray-500 hover:text-gray-800 dark:hover:text-white"
+                    }`}
+                  >
+                    <FaBroadcastTower />
+                    <span>Preview</span>
+                  </button>
                 </div>
-              )}
 
-              {/* Editor */}
+                {/* Right side: File Name & Fullscreen Button */}
+                <div className="flex items-center gap-3">
+                  {activeFileId && currentFile && (
+                    <span className="text-xs text-gray-600 dark:text-gray-400">
+                      {currentFile?.name}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleFullscreenPreview}
+                    className="text-gray-500 hover:text-gray-800 dark:hover:text-white"
+                    title="Open Preview in New Window"
+                  >
+                    <FaExpand />
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Editor or Preview Panel */}
               <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
-                {activeFileId && currentFile ? (
-                  <Editor
-                    height="100%"
-                    theme={theme === "dark" ? "vs-dark" : "light"}
-                    language={currentFile.language}
-                    value={currentFile.content}
-                    onChange={handleCodeChange}
-                    path={currentFile.id}
-                    onMount={handleEditorDidMount}
-                    options={{
-                      fontSize: 14,
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      automaticLayout: true,
-                      suggest: {
-                        preview: true,
-                      },
-                      inlineSuggest: {
-                        enabled: true,
-                      },
-                    }}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                    {Object.keys(files).length === 0
-                      ? "Loading files..."
-                      : "Select a file to start editing or create a new one"}
-                  </div>
+                {/* SHOW CODE EDITOR */}
+                {viewMode === "code" && (
+                  <>
+                    {activeFileId && currentFile ? (
+                      <Editor
+                        height="100%"
+                        theme={theme === "dark" ? "vs-dark" : "light"}
+                        language={currentFile.language}
+                        value={currentFile.content}
+                        onChange={handleCodeChange}
+                        path={currentFile.id}
+                        onMount={handleEditorDidMount}
+                        options={{
+                          fontSize: 14,
+                          minimap: { enabled: false },
+                          scrollBeyondLastLine: false,
+                          automaticLayout: true,
+                          suggest: {
+                            preview: true,
+                          },
+                          inlineSuggest: {
+                            enabled: true,
+                          },
+                        }}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                        {Object.keys(files).length === 0
+                          ? "Loading files..."
+                          : "Select a file to start editing or create a new one"}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* SHOW PREVIEW */}
+                {viewMode === "preview" && (
+                  <LivePreviewPanel files={developmentFiles} />
                 )}
               </div>
-            </Panel>
+            </div>
+          ) : (
+            /* --- PROGRAMMING & DB VIEW (With Output Panel) --- */
+            <PanelGroup direction="vertical">
+              {/* Editor Panel (Original) */}
+              <Panel
+                defaultSize={70}
+                minSize={30}
+                className="flex flex-col min-h-0"
+              >
+                {/* Tab Bar (Original) */}
+                {activeFileId && currentFile && (
+                  <div className="bg-gray-100 dark:bg-[#252526] h-9 flex items-center px-2 border-b border-gray-200 dark:border-[#1e1e1e] flex-shrink-0">
+                    <div className="bg-white dark:bg-[#1e1e1e] px-3 py-1 text-xs text-gray-800 dark:text-gray-300 rounded-t">
+                      {currentFile?.name}
+                    </div>
+                  </div>
+                )}
 
-            {/* Bottom Resize Handle */}
-            <PanelResizeHandle />
+                {/* Editor (Original) */}
+                <div className="flex-1 bg-white dark:bg-[#1e1e1e] min-h-0">
+                  {activeFileId && currentFile ? (
+                    <Editor
+                      height="100%"
+                      theme={theme === "dark" ? "vs-dark" : "light"}
+                      language={currentFile.language}
+                      value={currentFile.content}
+                      onChange={handleCodeChange}
+                      path={currentFile.id}
+                      onMount={handleEditorDidMount}
+                      options={{
+                        fontSize: 14,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        automaticLayout: true,
+                        suggest: {
+                          preview: true,
+                        },
+                        inlineSuggest: {
+                          enabled: true,
+                        },
+                      }}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                      {Object.keys(files).length === 0
+                        ? "Loading files..."
+                        : "Select a file to start editing or create a new one"}
+                    </div>
+                  )}
+                </div>
+              </Panel>
 
-            {/* Output Panel */}
-            <Panel
-              defaultSize={30}
-              minSize={15}
-              maxSize={50}
-              className="min-h-[100px] bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
-            >
-              <div className="bg-gray-100 dark:bg-[#252526] px-4 py-2 border-b border-gray-200 dark:border-[#1e1e1e]">
-                <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Output
-                </h3>
-              </div>
-              <div className="flex-1 p-4 h-[calc(100%-36px)] overflow-auto">
-                <pre className="text-xs text-gray-800 dark:text-gray-300 whitespace-pre-wrap font-mono">
-                  {isLoading && (
-                    <span className="text-yellow-500 dark:text-yellow-400">
-                      Executing code...
-                    </span>
-                  )}
-                  {output && (
-                    <span className="text-green-600 dark:text-green-400">
-                      {output}
-                    </span>
-                  )}
-                  {error && (
-                    <span className="text-red-600 dark:text-red-400">
-                      {error}
-                    </span>
-                  )}
-                  {!isLoading && !output && !error && (
-                    <span className="text-gray-400 dark:text-gray-600">
-                      No output yet. Run your code to see results.
-                    </span>
-                  )}
-                </pre>
-              </div>
-            </Panel>
-          </PanelGroup>
-        </Panel>
+              {/* Bottom Resize Handle (Original) */}
+              <PanelResizeHandle />
+
+              {/* Output Panel (Original) */}
+              <Panel
+                defaultSize={30}
+                minSize={15}
+                maxSize={50}
+                className="min-h-[100px] bg-white dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#1e1e1e] flex flex-col flex-shrink-0"
+              >
+                <div className="bg-gray-100 dark:bg-[#252526] px-4 py-2 border-b border-gray-200 dark:border-[#1e1e1e]">
+                  <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                    Output
+                  </h3>
+                </div>
+                <div className="flex-1 p-4 h-[calc(100%-36px)] overflow-auto">
+                  <div className="text-xs text-gray-800 dark:text-gray-300 font-mono">
+                    {isLoading && (
+                      <div className="text-yellow-500 dark:text-yellow-400">
+                        Executing code...
+                      </div>
+                    )}
+
+                    {error && (
+                      <div className="text-red-600 dark:text-red-400">
+                        {error}
+                      </div>
+                    )}
+
+                    {/* Only render output once via the section-specific branches below */}
+                    {!isLoading &&
+                      !error &&
+                      output &&
+                      activeSection === "database" && (
+                        <SqlOutputTable data={output} />
+                      )}
+
+                    {!isLoading &&
+                      !error &&
+                      output &&
+                      activeSection !== "database" && (
+                        <pre className="text-green-600 dark:text-green-400 whitespace-pre-wrap">
+                          {output}
+                        </pre>
+                      )}
+
+                    {!isLoading && !output && !error && (
+                      <div className="text-gray-400 dark:text-gray-600">
+                        No output yet. Run your code to see results.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Panel>
+            </PanelGroup>
+          )}
+          {/* === CONDITIONAL RENDERING END === */}
+        </Panel>  
 
         {/* Right Resize Handle */}
         <PanelResizeHandle />
